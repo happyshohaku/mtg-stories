@@ -15,7 +15,7 @@ The EPUB builder module creates valid EPUB files from parsed story content:
 
 ```python
 from ebooklib import epub  # EPUB creation
-from PIL import Image      # Image processing
+from PIL import Image, ImageDraw, ImageFont  # Image processing and text rendering
 ```
 
 ## CSS Styling
@@ -129,16 +129,75 @@ output_path = os.path.join(output_dir, f"{safe_filename}.epub")
 
 ---
 
-### _add_cover_image(book, image_path)
+### _add_cover_image(book, image_path, title)
 
-**Purpose:** Add and process cover image.
+**Purpose:** Add and process cover image with standard book dimensions and title overlay.
+
+**Parameters:**
+- `book` - EpubBook instance
+- `image_path` - Path to source image
+- `title` - Story set name to display on cover
 
 **Processing:**
 1. Open image with Pillow
 2. Convert RGBA/P modes to RGB
-3. Resize if larger than 1600px (longest side)
-4. Save as JPEG (quality 85)
-5. Add to book with `book.set_cover()`
+3. Crop to 1:1.6 aspect ratio (center crop)
+4. Resize to 1600x2560 pixels (Kindle recommended)
+5. Add title text overlay via `_add_title_to_cover()`
+6. Save as JPEG (quality 85)
+7. Add to book with `book.set_cover()`
+
+**Cover Dimensions:**
+```python
+TARGET_WIDTH = 1600
+TARGET_HEIGHT = 2560
+TARGET_RATIO = 1.6  # Standard book aspect ratio
+```
+
+---
+
+### _add_title_to_cover(img, title) -> Image
+
+**Purpose:** Add title text in a semi-transparent box on the cover image.
+
+**Layout:**
+```
+┌─────────────────────────────┐
+│                             │
+│      [Story artwork]        │
+│                             │
+│   ┌───────────────────┐     │ ← 15% margin left/right
+│   │                   │     │
+│   │   Story Title     │     │ ← Semi-transparent box
+│   │                   │     │   (~85% opacity)
+│   └───────────────────┘     │
+│                             │ ← 8% margin bottom
+└─────────────────────────────┘
+```
+
+**Features:**
+- Box positioned in bottom third with 15% side margins, 8% bottom margin
+- Semi-transparent dark background (RGBA: 20, 20, 20, 220)
+- 160pt bold font (Georgia Bold preferred)
+- Automatic word wrapping for long titles
+- Text centered horizontally and vertically within box
+
+**Font Loading:**
+Tries fonts in order: Georgia Bold → Georgia → Times Bold → Times → Arial Bold → Arial → DejaVu Serif Bold → System default
+
+---
+
+### _wrap_text(text, font, max_width, draw) -> list[str]
+
+**Purpose:** Word-wrap text to fit within a maximum pixel width.
+
+**Parameters:**
+- `text` - The text to wrap
+- `font` - PIL ImageFont object
+- `max_width` - Maximum width in pixels
+- `draw` - PIL ImageDraw object (for measuring text)
+
+**Returns:** List of lines that fit within max_width.
 
 ---
 

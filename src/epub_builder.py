@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 
 from ebooklib import epub
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from .parser import Story
 
@@ -208,7 +208,7 @@ def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_imag
 
     # Add cover image if provided
     if cover_image_path and os.path.exists(cover_image_path):
-        _add_cover_image(book, cover_image_path)
+        _add_cover_image(book, cover_image_path, set_name)
 
     # Add CSS
     css = epub.EpubItem(
@@ -269,24 +269,44 @@ def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_imag
     return output_path
 
 
-def _add_cover_image(book: epub.EpubBook, image_path: str):
-    """Add a cover image to the book."""
+def _add_cover_image(book: epub.EpubBook, image_path: str, title: str = ""):
+    """Add a cover image to the book with standard book aspect ratio and title text."""
+    import io
+
+    # Target dimensions (Kindle recommended: 1600x2560, ratio 1:1.6)
+    TARGET_WIDTH = 1600
+    TARGET_HEIGHT = 2560
+    TARGET_RATIO = TARGET_HEIGHT / TARGET_WIDTH  # 1.6
+
     try:
-        # Read and possibly resize the cover image
         with Image.open(image_path) as img:
             # Convert to RGB if necessary
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
 
-            # Resize if too large (max 1600px on longest side)
-            max_size = 1600
-            if max(img.size) > max_size:
-                ratio = max_size / max(img.size)
-                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            orig_width, orig_height = img.size
+            orig_ratio = orig_height / orig_width
+
+            # Crop to target aspect ratio (center crop)
+            if orig_ratio < TARGET_RATIO:
+                # Image is too wide, crop width
+                new_width = int(orig_height / TARGET_RATIO)
+                left = (orig_width - new_width) // 2
+                img = img.crop((left, 0, left + new_width, orig_height))
+            elif orig_ratio > TARGET_RATIO:
+                # Image is too tall, crop height
+                new_height = int(orig_width * TARGET_RATIO)
+                top = (orig_height - new_height) // 2
+                img = img.crop((0, top, orig_width, top + new_height))
+
+            # Resize to target dimensions
+            img = img.resize((TARGET_WIDTH, TARGET_HEIGHT), Image.Resampling.LANCZOS)
+
+            # Add title text overlay
+            if title:
+                img = _add_title_to_cover(img, title)
 
             # Save to bytes
-            import io
             buffer = io.BytesIO()
             img.save(buffer, format="JPEG", quality=85)
             cover_content = buffer.getvalue()
@@ -295,6 +315,115 @@ def _add_cover_image(book: epub.EpubBook, image_path: str):
 
     except Exception as e:
         print(f"Failed to add cover image: {e}")
+
+
+def _add_title_to_cover(img: Image.Image, title: str) -> Image.Image:
+    """Add title text to the cover image in a rectangular box with margins."""
+    img_width, img_height = img.size
+
+    # 15% margins on left, right, and bottom
+    margin = int(img_width * 0.15)
+    margin_bottom = int(img_height * 0.08)  # Slightly less on bottom
+
+    # Box dimensions - positioned in bottom third with margins
+    box_height = img_height // 3
+    box_left = margin
+    box_right = img_width - margin
+    box_bottom = img_height - margin_bottom
+    box_top = box_bottom - box_height
+    box_width = box_right - box_left
+
+    # Create semi-transparent overlay for the box
+    overlay = Image.new("RGBA", (img_width, img_height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    # Draw semi-transparent dark box with rounded appearance
+    overlay_draw.rectangle(
+        [(box_left, box_top), (box_right, box_bottom)],
+        fill=(20, 20, 20, 220)  # Near-black with ~85% opacity
+    )
+
+    # Composite the overlay onto the image
+    img = img.convert("RGBA")
+    img = Image.alpha_composite(img, overlay)
+    img = img.convert("RGB")
+
+    # Now draw text on the composited image
+    draw = ImageDraw.Draw(img)
+
+    # Try to load a nice font with larger size
+    font_size = 160
+    font = None
+
+    # Try common font paths (prefer bold fonts)
+    font_paths = [
+        "C:/Windows/Fonts/georgiab.ttf",  # Georgia Bold
+        "C:/Windows/Fonts/georgia.ttf",
+        "C:/Windows/Fonts/timesbd.ttf",  # Times Bold
+        "C:/Windows/Fonts/times.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",  # Arial Bold
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/System/Library/Fonts/Times.ttc",
+    ]
+
+    for font_path in font_paths:
+        try:
+            font = ImageFont.truetype(font_path, font_size)
+            break
+        except (OSError, IOError):
+            continue
+
+    if font is None:
+        font = ImageFont.load_default()
+        font_size = 20
+
+    # Word wrap the title to fit in the box (with padding inside box)
+    text_padding = 40
+    max_text_width = box_width - (text_padding * 2)
+    lines = _wrap_text(title, font, max_text_width, draw)
+
+    # Calculate total text block height
+    line_height = font_size + 30
+    total_text_height = len(lines) * line_height
+
+    # Center text vertically within the box
+    text_start_y = box_top + (box_height - total_text_height) // 2
+
+    # Draw each line centered horizontally within the box
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_width = bbox[2] - bbox[0]
+        x_position = box_left + (box_width - text_width) // 2
+
+        # Draw text in white
+        draw.text((x_position, text_start_y), line, font=font, fill=(255, 255, 255))
+
+        text_start_y += line_height
+
+    return img
+
+
+def _wrap_text(text: str, font: ImageFont.ImageFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
+    """Wrap text to fit within max_width."""
+    words = text.split()
+    lines = []
+    current_line = []
+
+    for word in words:
+        test_line = " ".join(current_line + [word])
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(" ".join(current_line))
+            current_line = [word]
+
+    if current_line:
+        lines.append(" ".join(current_line))
+
+    return lines
 
 
 def _create_chapter(story: Story, chapter_num: int, css: epub.EpubItem, image_mapping: dict[str, str] | None = None) -> epub.EpubHtml:
