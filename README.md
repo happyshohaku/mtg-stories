@@ -111,20 +111,6 @@ Detailed documentation for developers is available in the `docs/` folder:
 | ebooklib | EPUB file creation |
 | Pillow | Image processing, cover generation, and text rendering |
 
-## Troubleshooting
-
-### "Unknown Author" showing for stories
-The parser attempts multiple methods to extract author names. If a story shows "Unknown Author", the page structure may have changed. Check the JSON-LD structured data or author archive links on the story page.
-
-### Images not displaying
-Images are automatically converted to JPEG format for Kindle compatibility. WebP and PNG images with transparency are converted with a white background.
-
-### Table/content overflow
-The EPUB uses `box-sizing: border-box` CSS to handle content with inline styles. Original styling is preserved to maintain the intended appearance.
-
-### Cover image issues
-Cover images are automatically cropped to 1:1.6 aspect ratio and resized to 1600x2560 pixels. The story set title is overlaid in a semi-transparent box at the bottom.
-
 ## License
 
 This project is for personal use. Magic: The Gathering stories are copyright Wizards of the Coast.
