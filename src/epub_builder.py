@@ -46,11 +46,6 @@ h3 {
 
 p {
     margin: 0.5em 0;
-    text-indent: 1.5em;
-}
-
-p:first-of-type {
-    text-indent: 0;
 }
 
 em, i {
@@ -119,11 +114,13 @@ img {
 .chapter-author {
     font-size: 1em;
     color: #666;
+    text-align: center;
 }
 
 .chapter-date {
     font-size: 0.9em;
     color: #888;
+    text-align: center;
 }
 
 a {
@@ -198,11 +195,15 @@ def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_imag
     book.set_title(set_name)
     book.set_language("en")
 
-    # Collect all unique authors
-    authors = list(set(s.author for s in stories if s.author != "Unknown Author"))
-    if authors:
-        for author in authors:
-            book.add_author(author)
+    # Set primary author (first story's author)
+    primary_author = None
+    for story in stories:
+        if story.author and story.author != "Unknown Author":
+            primary_author = story.author
+            break
+
+    if primary_author:
+        book.add_author(primary_author)
     else:
         book.add_author("Wizards of the Coast")
 
