@@ -7,7 +7,7 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from . import scraper, parser, epub_builder
+from . import scraper, parser, epub_builder, wiki_scraper
 
 
 class MTGStoriesApp:
@@ -159,19 +159,63 @@ class MTGStoriesApp:
         self.root.update_idletasks()
 
     def _refresh_sets(self):
-        """Fetch story sets from the website."""
-        self._set_status("Fetching story sets...")
+        """Fetch story sets from both Contentful API and mtg.wiki."""
+        self._set_status("Fetching story sets from official site & wiki...")
         self.generate_btn.config(state="disabled")
         self.progress_var.set(0)
 
         def fetch():
+            contentful_sets = {}
+            wiki_sets = {}
+
+            # Fetch from Contentful API (official site)
             try:
-                sets = scraper.fetch_all_story_sets()
-                self.root.after(0, lambda: self._update_sets_list(sets))
+                contentful_sets = scraper.fetch_all_story_sets()
             except Exception as e:
-                self.root.after(0, lambda: self._show_error(f"Failed to fetch story sets: {e}"))
+                print(f"Failed to fetch Contentful story sets: {e}")
+
+            # Fetch from mtg.wiki
+            try:
+                self.root.after(0, lambda: self._set_status("Fetching archive stories from mtg.wiki..."))
+                raw_wiki_sets = wiki_scraper.fetch_wiki_story_sets()
+
+                # Deduplicate: remove wiki stories already in Contentful
+                if contentful_sets:
+                    contentful_slugs = wiki_scraper.get_contentful_slugs(contentful_sets)
+                    wiki_sets = wiki_scraper.filter_wiki_sets(raw_wiki_sets, contentful_slugs)
+                else:
+                    wiki_sets = raw_wiki_sets
+            except Exception as e:
+                print(f"Failed to fetch wiki story sets: {e}")
+
+            # Merge both sources
+            merged = self._merge_story_sets(contentful_sets, wiki_sets)
+            self.root.after(0, lambda: self._update_sets_list(merged))
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _merge_story_sets(
+        self,
+        contentful_sets: dict[int, list[dict]],
+        wiki_sets: dict[int, list[dict]]
+    ) -> dict[int, list[dict]]:
+        """
+        Merge Contentful and wiki story sets into a single dict by year.
+        Contentful sets appear first within each year, wiki sets after.
+        """
+        all_years = set(contentful_sets.keys()) | set(wiki_sets.keys())
+        merged: dict[int, list[dict]] = {}
+
+        for year in all_years:
+            year_sets = []
+            # Contentful sets first
+            year_sets.extend(contentful_sets.get(year, []))
+            # Then wiki sets (already filtered for duplicates)
+            year_sets.extend(wiki_sets.get(year, []))
+            if year_sets:
+                merged[year] = year_sets
+
+        return merged
 
     def _update_sets_list(self, sets_by_year: dict[int, list[dict]]):
         """Update the listbox with fetched story sets grouped by year."""
@@ -188,7 +232,13 @@ class MTGStoriesApp:
                 continue
 
             # Add year header
-            header = f"──── {year} ────"
+            if year == -1:
+                year_label = "Other"
+            elif year == 0:
+                year_label = "Unknown Year"
+            else:
+                year_label = str(year)
+            header = f"──── {year_label} ────"
             self.listbox.insert(tk.END, header)
             self.listbox_items.append(None)  # None indicates a header
 
@@ -201,12 +251,14 @@ class MTGStoriesApp:
                 name = story_set.get("name", "Unknown")
                 story_count = len(story_set.get("stories", []))
                 external_links = story_set.get("external_links", [])
+                is_wiki = story_set.get("source") == "wiki"
 
-                # Build display text
+                # Build display text — show source for wiki sets
+                source_tag = " [mtg.wiki]" if is_wiki else ""
                 if story_count > 0 and external_links:
-                    display = f"  {name} ({story_count} stories, {len(external_links)} e-book)"
+                    display = f"  {name} ({story_count} stories, {len(external_links)} e-book){source_tag}"
                 elif story_count > 0:
-                    display = f"  {name} ({story_count} stories)"
+                    display = f"  {name} ({story_count} stories){source_tag}"
                 elif external_links:
                     display = f"  {name} (e-book only)"
                 else:
@@ -215,15 +267,30 @@ class MTGStoriesApp:
                 self.listbox.insert(tk.END, display)
                 self.listbox_items.append(story_set)
 
+                idx = self.listbox.size() - 1
                 # Gray out e-book only entries
                 if story_count == 0:
-                    idx = self.listbox.size() - 1
                     self.listbox.itemconfig(idx, fg="#999999")
+                # Give wiki/archive entries a distinct color
+                elif is_wiki:
+                    self.listbox.itemconfig(idx, fg="#8B4513")  # Saddle brown
 
                 total_sets += 1
 
+        # Count wiki vs contentful sets
+        wiki_count = sum(
+            1 for items in sets_by_year.values()
+            for s in items if s.get("source") == "wiki"
+        )
+        official_count = total_sets - wiki_count
+
         self.generate_btn.config(state="normal")
-        self._set_status(f"Found {total_sets} story sets across {len(sets_by_year)} years")
+        if wiki_count > 0:
+            self._set_status(
+                f"Found {total_sets} story sets ({official_count} official, {wiki_count} from archive)"
+            )
+        else:
+            self._set_status(f"Found {total_sets} story sets across {len(sets_by_year)} years")
         self._set_progress(0)
 
     def _browse_output(self):
@@ -305,9 +372,18 @@ class MTGStoriesApp:
 
             try:
                 html = scraper.fetch_story_page(info["url"])
-                story = parser.parse_story(html, info["url"])
 
-                # Override publication date from API if available
+                # For wiki-sourced stories, pass fallback metadata
+                # (author and date from wiki catalog, in case page parsing fails)
+                story = parser.parse_story(
+                    html,
+                    info["url"],
+                    fallback_author=info.get("author"),
+                    fallback_date=info.get("published_date"),
+                    fallback_title=info.get("title"),
+                )
+
+                # Override publication date from API/wiki if available
                 if info.get("published_date"):
                     story.publication_date = info["published_date"]
 

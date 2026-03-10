@@ -175,19 +175,28 @@ def fetch_story_page(url: str) -> str:
     """
     Download an individual story page.
 
+    Handles both regular URLs and web.archive.org URLs (with longer timeout).
+
     Args:
         url: The full URL of the story.
 
     Returns:
         HTML content of the story page.
     """
+    is_archive = "web.archive.org" in url
+
     # Add a small delay to be respectful to the server
-    time.sleep(0.5)
+    # Longer delay for archive.org which rate-limits more aggressively
+    time.sleep(1.0 if is_archive else 0.5)
+
+    # Use appropriate timeout — archive.org can be slow
+    timeout = 60 if is_archive else 30
 
     response = requests.get(
         url,
         headers={"User-Agent": HEADERS["User-Agent"]},
-        timeout=30
+        timeout=timeout,
+        allow_redirects=True,
     )
     response.raise_for_status()
     return response.text

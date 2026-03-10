@@ -28,23 +28,46 @@ class Story:
     images: list[dict] = field(default_factory=list)  # [{"url": ..., "local_path": ..., "filename": ...}]
 
 
-def parse_story(html: str, url: str) -> Story:
+def parse_story(
+    html: str,
+    url: str,
+    fallback_author: str | None = None,
+    fallback_date: datetime | None = None,
+    fallback_title: str | None = None,
+) -> Story:
     """
     Parse a story page and extract all relevant content.
 
     Args:
         html: The HTML content of the story page.
         url: The URL of the story (for resolving relative links).
+        fallback_author: Author name to use if extraction fails (e.g., from wiki metadata).
+        fallback_date: Publication date to use if extraction fails.
+        fallback_title: Title to use if extraction fails.
 
     Returns:
         A Story object with all extracted data.
     """
+    # Strip Wayback Machine toolbar if this is an archive.org page
+    html = _strip_wayback_toolbar(html)
+
     soup = BeautifulSoup(html, "html.parser")
 
     title = _extract_title(soup)
+    if title in ("Untitled", "") and fallback_title:
+        title = fallback_title
+
     author = _extract_author(soup)
+    if author == "Unknown Author" and fallback_author:
+        author = fallback_author
+
     pub_date = _extract_publication_date(soup)
-    content_html, images = _extract_content(soup, url)
+    if pub_date is None and fallback_date:
+        pub_date = fallback_date
+
+    # Resolve base URL for archive.org pages (use original URL for relative links)
+    base_url = _get_base_url_for_content(url)
+    content_html, images = _extract_content(soup, base_url)
 
     return Story(
         url=url,
@@ -54,6 +77,68 @@ def parse_story(html: str, url: str) -> Story:
         content_html=content_html,
         images=images
     )
+
+
+def _strip_wayback_toolbar(html: str) -> str:
+    """
+    Remove the Wayback Machine toolbar/banner from archived pages.
+    The toolbar is injected by archive.org and interferes with content extraction.
+    """
+    # Remove the Wayback Machine toolbar comment block and elements
+    # The toolbar is wrapped in <!-- BEGIN WAYBACK TOOLBAR INSERT --> comments
+    html = re.sub(
+        r'<!-- BEGIN WAYBACK TOOLBAR INSERT -->.*?<!-- END WAYBACK TOOLBAR INSERT -->',
+        '',
+        html,
+        flags=re.DOTALL
+    )
+
+    # Remove the wm-ipp-base div (Wayback Machine toolbar container)
+    html = re.sub(
+        r'<div\s+id="wm-ipp-base"[^>]*>.*?</div>\s*</div>\s*</div>',
+        '',
+        html,
+        flags=re.DOTALL
+    )
+
+    # Remove Wayback Machine script injections
+    html = re.sub(
+        r'<script\s+src="[^"]*web\.archive\.org[^"]*"[^>]*>.*?</script>',
+        '',
+        html,
+        flags=re.DOTALL
+    )
+
+    # Remove _wm. prefixed scripts
+    html = re.sub(
+        r'<script[^>]*>\s*var\s+_wm\b.*?</script>',
+        '',
+        html,
+        flags=re.DOTALL
+    )
+
+    return html
+
+
+def _get_base_url_for_content(url: str) -> str:
+    """
+    Get the appropriate base URL for resolving relative links.
+    For archive.org URLs, extract the original URL to use as base.
+    """
+    if "web.archive.org" in url:
+        # Extract the original URL from archive.org URL
+        # Format: https://web.archive.org/web/TIMESTAMP/ORIGINAL_URL
+        match = re.search(r'web\.archive\.org/web/\d+/(https?://.*)', url)
+        if match:
+            return match.group(1)
+        # Also handle without protocol
+        match = re.search(r'web\.archive\.org/web/\d+/(.*)', url)
+        if match:
+            original = match.group(1)
+            if not original.startswith("http"):
+                original = "http://" + original
+            return original
+    return url
 
 
 def _extract_title(soup: BeautifulSoup) -> str:
@@ -75,7 +160,17 @@ def _extract_title(soup: BeautifulSoup) -> str:
     # Fallback to page title
     title_tag = soup.find("title")
     if title_tag:
-        return title_tag.get_text(strip=True).split("|")[0].strip()
+        title = title_tag.get_text(strip=True).split("|")[0].strip()
+        # Clean common suffixes from old WotC pages
+        for suffix in [
+            " - Magic: The Gathering",
+            " - Wizards of the Coast",
+            " | MAGIC: THE GATHERING",
+            " | Magic: The Gathering",
+        ]:
+            if title.endswith(suffix):
+                title = title[:-len(suffix)].strip(" -")
+        return title
 
     return "Untitled"
 
@@ -207,11 +302,20 @@ def _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict
     images = []
 
     # Find the main article content
+    # Includes selectors for modern WotC site, older site layouts, and archive.org pages
     content_selectors = [
         "article .article-body",
         "article .entry-content",
         ".article-content",
         ".story-content",
+        # Older WotC site layouts (pre-2015)
+        "#content-detail-page-of-an-article",
+        ".article-detail",
+        "#main-content",
+        "#article-body",
+        "td.article-body",              # Very old WotC layout used tables
+        "#bodycontent",                  # Old Wizards.com layout
+        ".main-content",
         "article",
         "main",
     ]
@@ -229,7 +333,17 @@ def _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict
     content_elem = BeautifulSoup(str(content_elem), "html.parser")
 
     # Remove unwanted elements (including iframes which EPUBs don't support)
-    for unwanted in content_elem.select("script, style, nav, header, footer, iframe, .social-share, .comments, .related-articles, .advertisement"):
+    unwanted_selectors = [
+        "script", "style", "nav", "header", "footer", "iframe",
+        ".social-share", ".comments", ".related-articles", ".advertisement",
+        # Wayback Machine / archive.org artifacts
+        "#wm-ipp-base", "#wm-ipp", "#donato", "#wm-btm",
+        "[id^='wm-']",
+        # Old WotC site cruft
+        ".header-search", ".site-footer", ".breadcrumb",
+        ".article-footer", ".article-sidebar",
+    ]
+    for unwanted in content_elem.select(", ".join(unwanted_selectors)):
         unwanted.decompose()
 
     # Process images
@@ -258,8 +372,11 @@ def _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict
         if href.startswith("#"):
             # Internal anchor link - keep it
             pass
-        elif "magic.wizards.com" in href:
-            # External link to MTG site - remove the link but keep text
+        elif "magic.wizards.com" in href or "wizards.com" in href:
+            # External link to MTG/Wizards site - remove the link but keep text
+            link.replace_with(link.get_text())
+        elif "web.archive.org" in href:
+            # Archive.org link - remove the link but keep text
             link.replace_with(link.get_text())
         else:
             # Other external links - keep them
