@@ -4,9 +4,11 @@
 
 ## Purpose
 
-The scraper module handles all external data fetching:
-1. Retrieving story set metadata from the Contentful API
-2. Downloading individual story HTML pages from the website
+The scraper module handles all Contentful API communication:
+1. Retrieving story set metadata from storyGroup entries
+2. Fetching individual magic-story articles and grouping by title prefix
+3. Deduplication utilities for slug/URL matching
+4. Downloading individual story HTML pages
 
 ## Constants
 
@@ -20,14 +22,14 @@ HEADERS = {
     "Authorization": f"Bearer {CONTENTFUL_TOKEN}"
 }
 
-YEARS = list(range(2025, 2013, -1))  # 2025 down to 2014
+YEARS = list(range(datetime.now().year, 2013, -1))  # Current year down to 2014
 ```
 
 ## Functions
 
 ### fetch_all_story_sets()
 
-**Purpose:** Fetch all story sets from all configured years.
+**Purpose:** Fetch all story sets from all configured years via the `storyGroup` content type.
 
 **Returns:** `dict[int, list[dict]]` - Dictionary mapping year to list of story sets.
 
@@ -64,11 +66,6 @@ Return all_sets
 
 **Purpose:** Fetch story sets for a specific year from the Contentful API.
 
-**Parameters:**
-- `year` - The year to fetch (e.g., 2025)
-
-**Returns:** `list[dict]` - List of story set dictionaries.
-
 **API Query Parameters:**
 ```python
 params = {
@@ -93,33 +90,103 @@ params = {
 4. **Sort stories** by publication date
 5. **Return** list of processed story sets
 
-**Code Walkthrough - Story Processing:**
+---
 
-```python
-for story_link in fields.get("stories", []):
-    story_id = story_link.get("sys", {}).get("id")
-    if story_id and story_id in entries_map:
-        story_entry = entries_map[story_id]
-        content_type = story_entry["sys"]["contentType"]["sys"]["id"]
+### fetch_article_story_sets()
 
-        if content_type == "article":
-            # Newer format: /en/news/{category}/{slug}
-            category = story_fields.get("category", "magic-story")
-            slug = story_fields.get("slug", "")
-            url = f"{BASE_URL}/en/news/{category}/{slug}"
+**Purpose:** Fetch individual magic-story articles from Contentful and group them into story sets by title prefix.
 
-        elif content_type == "storyEntry":
-            # Older format: URL in CTA link
-            cta_link = story_fields.get("cta", {}).get("sys", {})
-            cta_entry = entries_map.get(cta_link["id"])
-            link = cta_entry["fields"]["link"]
+This catches stories that exist on `magic.wizards.com/en/news/magic-story` but aren't part of any `storyGroup` entry (e.g., "Secrets of Strixhaven | Off the Record").
 
-            if "magic.wizards.com" in link:
-                url = link
-            else:
-                # External link (e-book, Amazon)
-                external_links.append({"title": title, "url": link})
+**Returns:** `dict[int, list[dict]]` - Dictionary mapping year to list of story sets with `source="articles"`.
+
+**Flow:**
 ```
+_fetch_all_articles()
+       │
+       ▼
+Group by title prefix (split on " | ")
+  "Secrets of Strixhaven | Off the Record"
+    → set "Secrets of Strixhaven", story "Off the Record"
+  "Standalone Title" (no |)
+    → set "Standalone Title"
+       │
+       ▼
+Determine year from earliest published_date per group
+       │
+       ▼
+Return dict[year → list of story sets]
+```
+
+**Article Story Set Dict Structure:**
+```python
+{
+    "name": "Secrets of Strixhaven",
+    "year": 2026,
+    "source": "articles",
+    "stories": [
+        {
+            "title": "Off the Record",
+            "url": "https://magic.wizards.com/en/news/magic-story/secrets-of-strixhaven-off-the-record",
+            "slug": "secrets-of-strixhaven-off-the-record",
+            "published_date": datetime(2026, 3, 9),
+            "author": "Author Name",
+            "excerpt": "Story description text..."
+        }
+    ],
+    "external_links": [],
+    "image_url": None
+}
+```
+
+### _fetch_all_articles()
+
+**Purpose:** Fetch all magic-story articles from Contentful, handling pagination.
+
+**API Query Parameters:**
+```python
+params = {
+    "content_type": "article",
+    "fields.category": "magic-story",
+    "locale": "en",
+    "order": "-sys.createdAt",
+    "limit": "100",       # Contentful max per request
+    "skip": str(skip),    # Pagination offset
+    "include": "1",       # Resolve author entries
+}
+```
+
+**Processing per page:**
+1. Build author lookup from `includes.Entry` (content type `author`)
+2. For each item: extract title, slug, publishedDate, resolve author names, extract excerpt
+3. Paginate with `skip` until all articles fetched (~464 total)
+
+---
+
+### Deduplication Utilities
+
+#### get_storygroup_slugs(storygroup_sets)
+
+Extracts all story slugs and URL paths from storyGroup results for deduplication against articles.
+
+**Returns:** `set[str]` of normalized slugs and URL paths.
+
+#### filter_article_sets(article_sets, known_slugs)
+
+Removes articles whose slug or URL path already exists in `known_slugs`. Filters out empty sets after removal.
+
+**Returns:** Filtered `dict[int, list[dict]]`.
+
+#### get_article_slugs(article_sets)
+
+Extracts slugs from article sets for wiki deduplication. Includes:
+- Raw slugs
+- URL paths
+- Title-based slugs (for fuzzy matching against wiki story titles)
+
+**Returns:** `set[str]` of normalized slugs.
+
+---
 
 ### fetch_stories_for_set(story_set: dict)
 
@@ -131,34 +198,18 @@ for story_link in fields.get("stories", []):
 
 **Purpose:** Download an individual story page HTML.
 
-**Parameters:**
-- `url` - Full URL of the story page
-
-**Returns:** `str` - HTML content of the page
-
 **Features:**
-- 0.5 second delay before each request (rate limiting)
-- 30 second timeout
+- 0.5 second delay for regular requests, 1.0 second for archive.org
+- 30 second timeout (60 for archive.org)
 - Uses User-Agent header (no Authorization needed for public pages)
-
-```python
-def fetch_story_page(url: str) -> str:
-    time.sleep(0.5)  # Be respectful to server
-
-    response = requests.get(
-        url,
-        headers={"User-Agent": HEADERS["User-Agent"]},
-        timeout=30
-    )
-    response.raise_for_status()
-    return response.text
-```
+- Follows redirects
 
 ## Error Handling
 
 - **Year fetch failures:** Logged and skipped, other years continue
 - **HTTP errors:** Raised via `response.raise_for_status()`
 - **Missing data:** Returns empty lists/dicts, doesn't crash
+- **Pagination:** Stops when `skip >= total`
 
 ## Maintenance Notes
 
@@ -167,11 +218,11 @@ def fetch_story_page(url: str) -> str:
 2. Check if content types have changed (`article`, `storyEntry`, `storyGroup`)
 3. Check if URL patterns have changed
 
-### Adding new years:
-Update the `YEARS` constant:
-```python
-YEARS = list(range(2026, 2013, -1))  # Add 2026
-```
+### Year range:
+`YEARS` is now dynamic — `list(range(datetime.now().year, 2013, -1))` — no manual update needed.
+
+### Adding new article grouping patterns:
+Update `fetch_article_story_sets()` to handle new title formats beyond the `" | "` delimiter.
 
 ### Adjusting rate limiting:
 Modify the sleep duration in `fetch_story_page()`:

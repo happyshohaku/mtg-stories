@@ -4,7 +4,13 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 
 ## Features
 
-- Browse all available story sets from the MTG story archive (2014-2025)
+- Three data sources for comprehensive story coverage:
+  - **Contentful storyGroups** — official curated story sets (2014+)
+  - **Contentful articles** — individual magic-story articles not in any storyGroup
+  - **mtg.wiki** — archive stories including pre-2014 content
+- 3-layer deduplication prevents duplicate stories across sources
+- Real-time search bar to filter by set name or story title
+- Details panel showing story titles, authors, and dates on selection
 - Story sets grouped by year with newest first
 - Generate EPUB files with all episodes and side stories
 - Stories automatically sorted by publication date
@@ -82,7 +88,8 @@ mtg-stories/
 │   ├── __init__.py       # Package marker
 │   ├── main.py           # Entry point
 │   ├── gui.py            # Tkinter GUI application
-│   ├── scraper.py        # Web scraping & Contentful API
+│   ├── scraper.py        # Contentful API (storyGroups + articles)
+│   ├── wiki_scraper.py   # mtg.wiki archive scraper
 │   ├── parser.py         # HTML parsing & content extraction
 │   └── epub_builder.py   # EPUB file generation
 ├── docs/                 # Documentation SOPs

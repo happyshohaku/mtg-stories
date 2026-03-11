@@ -92,18 +92,39 @@ fields.firstStoryYear[in]={YEAR}
 
 ### article
 
-Individual story content (newer format, ~2020+).
+Individual story content (newer format, ~2020+). Used in two ways:
+1. **Linked from storyGroup** — referenced as a story entry within a curated set
+2. **Standalone** — queried directly via `content_type=article&fields.category=magic-story` to find stories not in any storyGroup
 
 **Fields:**
-- `title` - Story title
+- `title` - Story title (often formatted as "Set Name | Episode Title")
 - `slug` - URL slug
 - `category` - Usually "magic-story"
 - `publishedDate` - Publication date (format: "YYYY-MM-DD HH:MM:SS")
+- `authors` - Array of links to `author` entries
+- `excerpt` - HTML excerpt/description
+- `metaDescription` - Fallback description if excerpt is empty
 
 **URL Pattern:**
 ```
 https://magic.wizards.com/en/news/{category}/{slug}
 ```
+
+**Standalone Article Query:**
+```
+content_type=article
+fields.category=magic-story
+locale=en
+order=-sys.createdAt
+limit=100
+skip={offset}
+include=1
+```
+
+The `include=1` resolves linked `author` entries so author names can be extracted. Pagination is required since Contentful limits responses to 100 items max. There are ~464 total magic-story articles.
+
+**Title Prefix Grouping:**
+Article titles often follow the pattern `"Set Name | Story Title"`. The application splits on `" | "` to group articles into story sets (e.g., "Secrets of Strixhaven | Off the Record" → set "Secrets of Strixhaven").
 
 ### storyEntry
 

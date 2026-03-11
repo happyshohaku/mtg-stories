@@ -8,21 +8,25 @@ The MTG Stories to EPUB Converter follows a modular architecture with clear sepa
 ┌─────────────────────────────────────────────────────────────────┐
 │                         GUI (gui.py)                            │
 │                    Tkinter Application Window                   │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
-│  │ Story List  │  │  Controls   │  │   Progress/Status       │ │
-│  │  (Listbox)  │  │  (Buttons)  │  │   (Bar + Label)         │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘ │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────────────┐ │
+│  │ Search   │ │ Story    │ │ Details  │ │ Progress/Status   │ │
+│  │ Bar      │ │ List     │ │ Panel    │ │ (Bar + Label)     │ │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Scraper (scraper.py)                         │
-│                                                                 │
-│  fetch_all_story_sets() ──► Contentful API ──► Story metadata  │
-│  fetch_story_page()     ──► magic.wizards.com ──► Story HTML   │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ Scraper          │ │ Scraper          │ │ Wiki Scraper    │
+│ (scraper.py)     │ │ (scraper.py)     │ │ (wiki_scraper)  │
+│                  │ │                  │ │                 │
+│ storyGroups      │ │ articles         │ │ mtg.wiki page   │
+│ Contentful API   │ │ Contentful API   │ │ HTML tables     │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+              │               │               │
+              └───────┬───────┘───────────────┘
+                      │  3-layer dedup + merge
+                      ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Parser (parser.py)                          │
 │                                                                 │
@@ -38,6 +42,26 @@ The MTG Stories to EPUB Converter follows a modular architecture with clear sepa
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Data Sources
+
+The application fetches stories from three sources, merged with deduplication:
+
+| Source | Module | Priority | Content |
+|--------|--------|----------|---------|
+| **storyGroups** | `scraper.py` | Highest | Curated story sets from Contentful (2014+) |
+| **articles** | `scraper.py` | Medium | Individual `magic-story` articles from Contentful |
+| **mtg.wiki** | `wiki_scraper.py` | Lowest | Archive stories from wiki tables (all years) |
+
+### 3-Layer Deduplication Chain
+
+1. **storyGroups** — baseline, highest priority
+2. **Articles** — deduped against storyGroup slugs
+3. **Wiki** — deduped against storyGroup + article slugs (URL path + title-based matching)
+
+### Metadata Enrichment
+
+Before dedup, article metadata (author, excerpt) is applied to storyGroup stories via slug matching. This fills in author names and excerpts that storyGroup entries don't include.
+
 ## Data Flow
 
 ### 1. Startup Flow
@@ -50,8 +74,18 @@ GUI Initializes
        ▼
 Auto-fetch story sets (after 100ms delay)
        │
+       ├──► Fetch storyGroups from Contentful API
+       ├──► Fetch articles from Contentful API
+       │       ├──► Enrich storyGroup stories with article metadata
+       │       └──► Dedup articles against storyGroups
+       └──► Fetch stories from mtg.wiki
+               └──► Dedup wiki against storyGroups + articles
+       │
        ▼
-Display grouped by year in listbox
+Merge all three sources
+       │
+       ▼
+Display grouped by year in listbox (with search/filter)
 ```
 
 ### 2. EPUB Generation Flow
@@ -86,24 +120,33 @@ Show success message
 ## Module Responsibilities
 
 ### gui.py
-- Window layout and widgets
+- Window layout and widgets (search bar, listbox, details panel, controls)
+- Real-time search filtering by set name and story titles
+- Details panel showing story info on selection
+- 3-source fetch, enrichment, dedup, and merge orchestration
 - User interaction handling
 - Threading for background operations
 - Progress and status updates
-- File dialog for output directory
 
 ### scraper.py
 - Contentful API communication
-- Story set metadata retrieval
-- Individual story page fetching
-- Rate limiting (0.5s delay between requests)
+- Story set metadata retrieval (storyGroups)
+- Individual article fetching and title-prefix grouping
+- Slug extraction and dedup utilities
+- Individual story page downloading
+- Rate limiting (0.5s for regular, 1.0s for archive.org)
+
+### wiki_scraper.py
+- Parses HTML tables from `https://mtg.wiki/page/Magic_Story`
+- Extracts story metadata (title, author, date, URL, set)
+- Groups "Other" stories by series, title prefix, and author proximity
+- Slug extraction and dedup utilities for wiki content
 
 ### parser.py
 - HTML content extraction
 - Author name detection (multiple methods)
 - Publication date parsing
-- Image URL collection
-- Image downloading
+- Image URL collection and downloading
 
 ### epub_builder.py
 - EPUB file structure creation
@@ -111,6 +154,7 @@ Show success message
 - Chapter generation
 - Image embedding and format conversion
 - Table of contents generation
+- Cover image with title overlay
 
 ## Threading Model
 
@@ -139,9 +183,10 @@ Key points:
 Errors are handled at each layer:
 
 1. **Scraper**: HTTP errors, API errors → Exception raised
-2. **Parser**: Missing elements → Fallback values, continue
-3. **EPUB Builder**: Image failures → Skip image, continue
-4. **GUI**: All exceptions → Error dialog to user
+2. **Wiki Scraper**: Fetch/parse errors → Logged, returns empty
+3. **Parser**: Missing elements → Fallback values, continue
+4. **EPUB Builder**: Image failures → Skip image, continue
+5. **GUI**: All exceptions → Error dialog to user; source failures → skipped, other sources continue
 
 ## File Storage
 
@@ -160,6 +205,7 @@ Currently hardcoded values (could be made configurable):
 | Value | Location | Purpose |
 |-------|----------|---------|
 | `CONTENTFUL_TOKEN` | scraper.py | API authentication |
-| `YEARS` | scraper.py | Years to fetch (2014-2025) |
+| `YEARS` | scraper.py | Years to fetch (dynamic, current year down to 2014) |
 | `output_dir` | gui.py | Default output path |
 | `EPUB_CSS` | epub_builder.py | EPUB styling |
+| Wiki URL | wiki_scraper.py | mtg.wiki story list page |

@@ -5,7 +5,9 @@
 ## Purpose
 
 The GUI module provides a Tkinter-based graphical interface for:
-- Browsing available story sets
+- Browsing available story sets from three data sources
+- Real-time search filtering by set name or story title
+- Viewing story details (title, author, date) in a details panel
 - Selecting output directory
 - Triggering EPUB generation
 - Displaying progress and status
@@ -18,8 +20,8 @@ The GUI module provides a Tkinter-based graphical interface for:
 def __init__(self, root: tk.Tk):
     self.root = root
     self.root.title("MTG Stories to EPUB")
-    self.root.geometry("600x550")
-    self.root.minsize(500, 450)
+    self.root.geometry("600x650")
+    self.root.minsize(500, 550)
 
     # Data
     self.story_sets_by_year: dict[int, list[dict]] = {}
@@ -37,15 +39,23 @@ def __init__(self, root: tk.Tk):
 │  MTG Stories to EPUB                    (Header)    │
 ├─────────────────────────────────────────────────────┤
 │  Story Sets (by Year)                               │
+│  Search: [________________________]                 │
 │  ┌───────────────────────────────────────────────┐  │
+│  │ ──── 2026 ────                                │  │
+│  │   Secrets of Strixhaven (1 stories) [articles]│  │
 │  │ ──── 2025 ────                                │  │
 │  │   Edge of Eternities (5 stories)              │  │
 │  │   Lorwyn Eclipsed (4 stories)                │  │
-│  │ ──── 2024 ────                                │  │
-│  │   Outlaws of Thunder Junction (6 stories)    │  │
-│  │   ...                                        │▼ │
+│  │   The Magic Story Podcast (3 stories) [wiki] │▼ │
 │  └───────────────────────────────────────────────┘  │
 │  [Refresh Sets]                                     │
+├─────────────────────────────────────────────────────┤
+│  Details                                            │
+│  ┌───────────────────────────────────────────────┐  │
+│  │ Edge of Eternities  (official)                │  │
+│  │   Episode 1 — by Author — (2025-01-15)        │  │
+│  │   Episode 2 — by Author — (2025-01-22)        │  │
+│  └───────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────┤
 │  Output Directory                                   │
 │  ┌─────────────────────────────────────┐ [Browse]   │
@@ -67,10 +77,15 @@ root (Tk)
     ├── header_frame (Frame)
     │   └── Label "MTG Stories to EPUB"
     ├── list_frame (LabelFrame "Story Sets")
+    │   ├── search_frame (Frame)
+    │   │   ├── Label "Search:"
+    │   │   └── Entry (search_var, real-time filtering)
     │   ├── list_container (Frame)
     │   │   ├── listbox (Listbox)
     │   │   └── scrollbar (Scrollbar)
     │   └── Button "Refresh Sets"
+    ├── info_frame (LabelFrame "Details")
+    │   └── Text (info_text, disabled, styled tags)
     ├── output_frame (LabelFrame "Output Directory")
     │   ├── Entry (readonly, shows path)
     │   └── Button "Browse..."
@@ -81,6 +96,27 @@ root (Tk)
 
 ## Methods
 
+### Search
+
+#### _on_search(*args)
+Triggered on every keystroke in the search entry. Filters `story_sets_by_year` by matching the query against set names and individual story titles (case-insensitive). Calls `_update_sets_list()` with `preserve_search=True` to avoid overwriting the master data.
+
+Empty search restores the full list.
+
+---
+
+### Details Panel
+
+#### _show_info(story_set: dict)
+Populates the details Text widget with story set info using styled tags:
+- **bold** — set name
+- **story** — per-story line with title, author, date (indented 20px)
+
+#### _clear_info()
+Clears the details panel.
+
+---
+
 ### UI Update Methods
 
 #### _set_status(message: str)
@@ -89,15 +125,12 @@ Updates the status label text. Calls `root.update_idletasks()` to refresh immedi
 #### _set_progress(value: float)
 Updates the progress bar (0-100 scale). Calls `root.update_idletasks()`.
 
-#### _update_status(message: str) / _update_progress(value: float)
-Thread-safe versions using `root.after(0, callback)`.
-
 ---
 
 ### Data Methods
 
 #### _refresh_sets()
-Fetches story sets from the website in a background thread.
+Fetches story sets from all three sources in a background thread.
 
 **Flow:**
 ```
@@ -106,22 +139,46 @@ Set status "Fetching..."
        │
        ▼
 Background thread:
-  └── scraper.fetch_all_story_sets()
+  ├── scraper.fetch_all_story_sets()        → contentful_sets
+  ├── scraper.fetch_article_story_sets()    → raw_article_sets
+  │     ├── Build article_metadata lookup (slug → author/excerpt)
+  │     ├── Enrich contentful_sets stories with article metadata
+  │     └── filter_article_sets() against storyGroup slugs
+  └── wiki_scraper.fetch_wiki_story_sets()  → raw_wiki_sets
+        └── filter_wiki_sets() against storyGroup + article slugs
+       │
+       ▼
+_merge_story_sets(contentful, articles, wiki)
        │
        ▼
 Main thread (via root.after):
-  └── _update_sets_list(sets)
+  └── _update_sets_list(merged)
 ```
 
-#### _update_sets_list(sets_by_year: dict)
+#### _merge_story_sets(contentful_sets, article_sets, wiki_sets)
+Merges all three sources into a single dict by year. Order per year: storyGroups first, then articles, then wiki.
+
+#### _update_sets_list(sets_by_year, preserve_search=False)
 Populates the listbox with story sets grouped by year.
 
 **Display Format:**
 ```
-──── 2025 ────                    (Year header, not selectable)
-  Edge of Eternities (5 stories)  (Selectable story set)
-  Set Name (e-book only)          (Grayed out, opens link)
+──── 2025 ────                              (Year header, not selectable)
+  Edge of Eternities (5 stories)            (Official storyGroup — black)
+  New Set Name (2 stories) [articles]       (Article source — teal)
+  Archive Set (3 stories) [mtg.wiki]        (Wiki source — saddle brown)
+  Set Name (e-book only)                    (Grayed out, opens link)
 ```
+
+**Source Colors:**
+| Source | Color | Hex |
+|--------|-------|-----|
+| storyGroups | Default (black) | — |
+| articles | Teal | `#1E6F8C` |
+| mtg.wiki | Saddle brown | `#8B4513` |
+| e-book only | Gray | `#999999` |
+
+**Status bar** shows counts by source: "Found 150 story sets (80 official, 40 from articles, 30 from archive)"
 
 **Listbox Items Tracking:**
 ```python
@@ -129,9 +186,6 @@ self.listbox_items: list[dict | None]
 # None = year header (not selectable)
 # dict = story set (selectable)
 ```
-
-#### _get_selected_story_set() -> dict | None
-Returns the currently selected story set, or None if a header is selected.
 
 ---
 
@@ -141,30 +195,9 @@ Returns the currently selected story set, or None if a header is selected.
 Handles listbox selection changes.
 
 **Behavior:**
-- If year header selected → deselect it
-- If story set with stories → button shows "Generate EPUB"
+- If year header selected → deselect it, clear details panel
+- If story set with stories → button shows "Generate EPUB", show details
 - If e-book only entry → button shows "Open Link"
-
-```python
-def _on_select(self, event):
-    selection = self.listbox.curselection()
-    if not selection:
-        return
-
-    index = selection[0]
-    item = self.listbox_items[index]
-
-    if item is None:
-        # Year header - deselect
-        self.listbox.selection_clear(0, tk.END)
-    else:
-        stories = item.get("stories", [])
-        external_links = item.get("external_links", [])
-        if not stories and external_links:
-            self.generate_btn.config(text="Open Link")
-        else:
-            self.generate_btn.config(text="Generate EPUB")
-```
 
 #### _browse_output()
 Opens a folder browser dialog and updates the output directory.
@@ -176,20 +209,8 @@ Opens a folder browser dialog and updates the output directory.
 #### _generate_epub()
 Main generation entry point. Handles both EPUB generation and external link opening.
 
-**E-book Only Handling:**
-```python
-if not stories and external_links:
-    link = external_links[0]
-    self._set_status(f"Opening e-book link: {link['title']}")
-    webbrowser.open(link["url"])
-    return
-```
-
-**EPUB Generation:**
-Runs `_do_generate()` in a background thread.
-
 #### _do_generate(story_set: dict) -> str
-Performs the actual EPUB generation.
+Performs the actual EPUB generation in a background thread.
 
 **Progress Updates:**
 | Progress | Action |
@@ -201,23 +222,6 @@ Performs the actual EPUB generation.
 | 90% | Building EPUB |
 | 100% | Complete |
 
-**Steps:**
-1. Get story URLs from story set
-2. For each story:
-   - Fetch HTML page
-   - Parse content
-   - Download images
-3. Sort stories by publication date
-4. Download cover image (if available)
-5. Build EPUB file
-6. Clean up temp images folder
-
-#### _generation_complete(output_path: str)
-Shows success message and offers to open output folder.
-
-#### _show_error(message: str)
-Shows error dialog and resets UI state.
-
 ---
 
 ## Threading Pattern
@@ -226,19 +230,16 @@ All long-running operations use this pattern:
 
 ```python
 def _some_operation(self):
-    # Disable UI, show status
     self.generate_btn.config(state="disabled")
     self._set_status("Working...")
 
     def work():
         try:
             result = do_long_operation()
-            # Update UI on main thread
             self.root.after(0, lambda: self._handle_result(result))
         except Exception as e:
             self.root.after(0, lambda: self._show_error(str(e)))
 
-    # Run in background
     threading.Thread(target=work, daemon=True).start()
 ```
 
@@ -268,21 +269,17 @@ def run():
 
 ## Maintenance Notes
 
-### Adding new UI elements:
-1. Add widget in `_create_widgets()`
-2. Configure grid placement
-3. Add event handler if interactive
+### Adding new data sources:
+1. Add fetch call in `_refresh_sets()` background thread
+2. Add dedup step against existing slugs
+3. Pass to `_merge_story_sets()`
+4. Add source tag/color in `_update_sets_list()`
 
 ### Modifying the listbox display:
 Update `_update_sets_list()` to change how items are formatted.
 
-### Adding new generation options:
-1. Add UI controls in `_create_widgets()`
-2. Pass values to `_do_generate()`
-3. Update `epub_builder.create_epub()` if needed
+### Modifying the details panel:
+Update `_show_info()` to change what info is displayed per story.
 
 ### Theming:
-The app tries to load `azure.tcl` for a modern look. If not available, uses default Tkinter theme. To add a theme:
-1. Download theme TCL file
-2. Place in project root
-3. Update the `root.tk.call("source", ...)` line
+The app tries to load `azure.tcl` for a modern look. If not available, uses default Tkinter theme.
