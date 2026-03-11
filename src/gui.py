@@ -16,8 +16,8 @@ class MTGStoriesApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("MTG Stories to EPUB")
-        self.root.geometry("600x550")
-        self.root.minsize(500, 450)
+        self.root.geometry("600x650")
+        self.root.minsize(500, 550)
 
         # Data
         self.story_sets_by_year: dict[int, list[dict]] = {}
@@ -56,11 +56,22 @@ class MTGStoriesApp:
         list_frame = ttk.LabelFrame(main_frame, text="Story Sets (by Year)", padding="5")
         list_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         list_frame.columnconfigure(0, weight=1)
-        list_frame.rowconfigure(0, weight=1)
+        list_frame.rowconfigure(1, weight=1)
+
+        # Search bar
+        search_frame = ttk.Frame(list_frame)
+        search_frame.grid(row=0, column=0, sticky="ew", pady=(0, 5))
+        search_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(search_frame, text="Search:").grid(row=0, column=0, padx=(0, 5))
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self._on_search)
+        search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        search_entry.grid(row=0, column=1, sticky="ew")
 
         # Listbox with scrollbar
         list_container = ttk.Frame(list_frame)
-        list_container.grid(row=0, column=0, sticky="nsew")
+        list_container.grid(row=1, column=0, sticky="nsew")
         list_container.columnconfigure(0, weight=1)
         list_container.rowconfigure(0, weight=1)
 
@@ -82,11 +93,28 @@ class MTGStoriesApp:
             list_frame,
             text="Refresh Sets",
             command=self._refresh_sets
-        ).grid(row=1, column=0, sticky="w", pady=(5, 0))
+        ).grid(row=2, column=0, sticky="w", pady=(5, 0))
+
+        # Info panel — shows details when a story set is selected
+        info_frame = ttk.LabelFrame(main_frame, text="Details", padding="5")
+        info_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        info_frame.columnconfigure(0, weight=1)
+        info_frame.rowconfigure(0, weight=1)
+
+        self.info_text = tk.Text(
+            info_frame,
+            height=6,
+            wrap="word",
+            font=("Segoe UI", 9),
+            state="disabled",
+            relief="flat",
+            bg=main_frame.winfo_toplevel().cget("bg"),
+        )
+        self.info_text.grid(row=0, column=0, sticky="nsew")
 
         # Output directory
         output_frame = ttk.LabelFrame(main_frame, text="Output Directory", padding="5")
-        output_frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        output_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         output_frame.columnconfigure(0, weight=1)
 
         self.output_var = tk.StringVar(value=self.output_dir)
@@ -106,7 +134,7 @@ class MTGStoriesApp:
             command=self._generate_epub,
             style="Accent.TButton"
         )
-        self.generate_btn.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        self.generate_btn.grid(row=4, column=0, sticky="ew", pady=(0, 10))
 
         # Progress
         self.progress_var = tk.DoubleVar()
@@ -115,7 +143,7 @@ class MTGStoriesApp:
             variable=self.progress_var,
             maximum=100
         )
-        self.progress_bar.grid(row=4, column=0, sticky="ew", pady=(0, 5))
+        self.progress_bar.grid(row=5, column=0, sticky="ew", pady=(0, 5))
 
         # Status
         self.status_var = tk.StringVar(value="Ready")
@@ -124,7 +152,32 @@ class MTGStoriesApp:
             textvariable=self.status_var,
             font=("Segoe UI", 9)
         )
-        self.status_label.grid(row=5, column=0, sticky="w")
+        self.status_label.grid(row=6, column=0, sticky="w")
+
+    def _on_search(self, *args):
+        """Filter the story sets list based on search text."""
+        query = self.search_var.get().strip().lower()
+        if not query:
+            self._update_sets_list(self.story_sets_by_year)
+            return
+
+        filtered: dict[int, list[dict]] = {}
+        for year, sets in self.story_sets_by_year.items():
+            matching_sets = []
+            for story_set in sets:
+                name = story_set.get("name", "").lower()
+                # Match against set name or individual story titles
+                if query in name:
+                    matching_sets.append(story_set)
+                else:
+                    for story in story_set.get("stories", []):
+                        if query in story.get("title", "").lower():
+                            matching_sets.append(story_set)
+                            break
+            if matching_sets:
+                filtered[year] = matching_sets
+
+        self._update_sets_list(filtered, preserve_search=True)
 
     def _on_select(self, event):
         """Handle listbox selection - prevent selecting year headers."""
@@ -139,6 +192,7 @@ class MTGStoriesApp:
                 # This is a year header, deselect it
                 self.listbox.selection_clear(0, tk.END)
                 self.generate_btn.config(text="Generate EPUB")
+                self._clear_info()
             else:
                 # Update button text based on whether it's e-book only
                 stories = item.get("stories", [])
@@ -147,6 +201,52 @@ class MTGStoriesApp:
                     self.generate_btn.config(text="Open Link")
                 else:
                     self.generate_btn.config(text="Generate EPUB")
+                self._show_info(item)
+
+    def _clear_info(self):
+        """Clear the info panel."""
+        self.info_text.config(state="normal")
+        self.info_text.delete("1.0", tk.END)
+        self.info_text.config(state="disabled")
+
+    def _show_info(self, story_set: dict):
+        """Show details about the selected story set in the info panel."""
+        self.info_text.config(state="normal")
+        self.info_text.delete("1.0", tk.END)
+
+        # Configure text tags for styling
+        # lmargin1 = first line indent, lmargin2 = wrapped line indent
+        indent = 20  # pixels
+        self.info_text.tag_configure("bold", font=("Segoe UI", 9, "bold"))
+        self.info_text.tag_configure("story", font=("Segoe UI", 9),
+                                     lmargin1=indent, lmargin2=indent)
+        self.info_text.tag_configure("excerpt", font=("Segoe UI", 8, "italic"),
+                                     foreground="#555555",
+                                     lmargin1=indent, lmargin2=indent)
+
+        name = story_set.get("name", "Unknown")
+        stories = story_set.get("stories", [])
+        source = story_set.get("source", "official")
+
+        self.info_text.insert(tk.END, f"{name}", "bold")
+        self.info_text.insert(tk.END, f"  ({source})\n")
+
+        for story in stories:
+            title = story.get("title", "Unknown")
+            author = story.get("author", "")
+            date = story.get("published_date")
+            excerpt = story.get("excerpt", "")
+
+            # Story title line
+            date_str = date.strftime("%Y-%m-%d") if date else ""
+            parts = [title]
+            if author:
+                parts.append(f"by {author}")
+            if date_str:
+                parts.append(f"({date_str})")
+            self.info_text.insert(tk.END, " — ".join(parts) + "\n", "story")
+
+        self.info_text.config(state="disabled")
 
     def _set_status(self, message: str):
         """Update the status message."""
@@ -159,37 +259,82 @@ class MTGStoriesApp:
         self.root.update_idletasks()
 
     def _refresh_sets(self):
-        """Fetch story sets from both Contentful API and mtg.wiki."""
-        self._set_status("Fetching story sets from official site & wiki...")
+        """Fetch story sets from Contentful storyGroups, articles, and mtg.wiki."""
+        self._set_status("Fetching story sets...")
         self.generate_btn.config(state="disabled")
         self.progress_var.set(0)
 
         def fetch():
             contentful_sets = {}
+            article_sets = {}
             wiki_sets = {}
 
-            # Fetch from Contentful API (official site)
+            # Fetch from Contentful API — storyGroups (official curated sets)
             try:
+                self.root.after(0, lambda: self._set_status("Fetching story groups..."))
                 contentful_sets = scraper.fetch_all_story_sets()
             except Exception as e:
                 print(f"Failed to fetch Contentful story sets: {e}")
+
+            # Fetch from Contentful API — individual articles
+            try:
+                self.root.after(0, lambda: self._set_status("Fetching article archive..."))
+                raw_article_sets = scraper.fetch_article_story_sets()
+
+                # Build slug->metadata lookup from raw articles (before dedup)
+                # to enrich storyGroup stories with excerpts and authors
+                article_metadata = {}
+                for year_sets in raw_article_sets.values():
+                    for story_set in year_sets:
+                        for story in story_set.get("stories", []):
+                            slug = story.get("slug", "").lower().strip()
+                            if slug:
+                                article_metadata[slug] = {
+                                    "author": story.get("author"),
+                                    "excerpt": story.get("excerpt"),
+                                }
+
+                # Enrich storyGroup stories with article metadata
+                for year_sets in contentful_sets.values():
+                    for story_set in year_sets:
+                        for story in story_set.get("stories", []):
+                            slug = story.get("slug", "").lower().strip()
+                            if slug and slug in article_metadata:
+                                meta = article_metadata[slug]
+                                if meta.get("author") and not story.get("author"):
+                                    story["author"] = meta["author"]
+                                if meta.get("excerpt") and not story.get("excerpt"):
+                                    story["excerpt"] = meta["excerpt"]
+
+                # Deduplicate: remove articles already in storyGroups
+                if contentful_sets:
+                    sg_slugs = scraper.get_storygroup_slugs(contentful_sets)
+                    article_sets = scraper.filter_article_sets(raw_article_sets, sg_slugs)
+                else:
+                    article_sets = raw_article_sets
+            except Exception as e:
+                print(f"Failed to fetch article story sets: {e}")
 
             # Fetch from mtg.wiki
             try:
                 self.root.after(0, lambda: self._set_status("Fetching archive stories from mtg.wiki..."))
                 raw_wiki_sets = wiki_scraper.fetch_wiki_story_sets()
 
-                # Deduplicate: remove wiki stories already in Contentful
+                # Deduplicate: remove wiki stories already in storyGroups or articles
+                known_slugs = set()
                 if contentful_sets:
-                    contentful_slugs = wiki_scraper.get_contentful_slugs(contentful_sets)
-                    wiki_sets = wiki_scraper.filter_wiki_sets(raw_wiki_sets, contentful_slugs)
+                    known_slugs |= wiki_scraper.get_contentful_slugs(contentful_sets)
+                if article_sets:
+                    known_slugs |= scraper.get_article_slugs(article_sets)
+                if known_slugs:
+                    wiki_sets = wiki_scraper.filter_wiki_sets(raw_wiki_sets, known_slugs)
                 else:
                     wiki_sets = raw_wiki_sets
             except Exception as e:
                 print(f"Failed to fetch wiki story sets: {e}")
 
-            # Merge both sources
-            merged = self._merge_story_sets(contentful_sets, wiki_sets)
+            # Merge all three sources
+            merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
             self.root.after(0, lambda: self._update_sets_list(merged))
 
         threading.Thread(target=fetch, daemon=True).start()
@@ -197,29 +342,30 @@ class MTGStoriesApp:
     def _merge_story_sets(
         self,
         contentful_sets: dict[int, list[dict]],
-        wiki_sets: dict[int, list[dict]]
+        article_sets: dict[int, list[dict]],
+        wiki_sets: dict[int, list[dict]],
     ) -> dict[int, list[dict]]:
         """
-        Merge Contentful and wiki story sets into a single dict by year.
-        Contentful sets appear first within each year, wiki sets after.
+        Merge all three sources into a single dict by year.
+        Order per year: storyGroups first, then articles, then wiki.
         """
-        all_years = set(contentful_sets.keys()) | set(wiki_sets.keys())
+        all_years = set(contentful_sets.keys()) | set(article_sets.keys()) | set(wiki_sets.keys())
         merged: dict[int, list[dict]] = {}
 
         for year in all_years:
             year_sets = []
-            # Contentful sets first
             year_sets.extend(contentful_sets.get(year, []))
-            # Then wiki sets (already filtered for duplicates)
+            year_sets.extend(article_sets.get(year, []))
             year_sets.extend(wiki_sets.get(year, []))
             if year_sets:
                 merged[year] = year_sets
 
         return merged
 
-    def _update_sets_list(self, sets_by_year: dict[int, list[dict]]):
+    def _update_sets_list(self, sets_by_year: dict[int, list[dict]], preserve_search: bool = False):
         """Update the listbox with fetched story sets grouped by year."""
-        self.story_sets_by_year = sets_by_year
+        if not preserve_search:
+            self.story_sets_by_year = sets_by_year
         self.listbox.delete(0, tk.END)
         self.listbox_items = []
 
@@ -251,10 +397,17 @@ class MTGStoriesApp:
                 name = story_set.get("name", "Unknown")
                 story_count = len(story_set.get("stories", []))
                 external_links = story_set.get("external_links", [])
-                is_wiki = story_set.get("source") == "wiki"
+                source = story_set.get("source", "")
+                is_wiki = source == "wiki"
+                is_articles = source == "articles"
 
-                # Build display text — show source for wiki sets
-                source_tag = " [mtg.wiki]" if is_wiki else ""
+                # Build display text — show source for non-storyGroup sets
+                if is_wiki:
+                    source_tag = " [mtg.wiki]"
+                elif is_articles:
+                    source_tag = " [articles]"
+                else:
+                    source_tag = ""
                 if story_count > 0 and external_links:
                     display = f"  {name} ({story_count} stories, {len(external_links)} e-book){source_tag}"
                 elif story_count > 0:
@@ -274,23 +427,29 @@ class MTGStoriesApp:
                 # Give wiki/archive entries a distinct color
                 elif is_wiki:
                     self.listbox.itemconfig(idx, fg="#8B4513")  # Saddle brown
+                elif is_articles:
+                    self.listbox.itemconfig(idx, fg="#1E6F8C")  # Teal
 
                 total_sets += 1
 
-        # Count wiki vs contentful sets
+        # Count sets by source
         wiki_count = sum(
             1 for items in sets_by_year.values()
             for s in items if s.get("source") == "wiki"
         )
-        official_count = total_sets - wiki_count
+        article_count = sum(
+            1 for items in sets_by_year.values()
+            for s in items if s.get("source") == "articles"
+        )
+        official_count = total_sets - wiki_count - article_count
 
         self.generate_btn.config(state="normal")
+        parts = [f"{official_count} official"]
+        if article_count > 0:
+            parts.append(f"{article_count} from articles")
         if wiki_count > 0:
-            self._set_status(
-                f"Found {total_sets} story sets ({official_count} official, {wiki_count} from archive)"
-            )
-        else:
-            self._set_status(f"Found {total_sets} story sets across {len(sets_by_year)} years")
+            parts.append(f"{wiki_count} from archive")
+        self._set_status(f"Found {total_sets} story sets ({', '.join(parts)})")
         self._set_progress(0)
 
     def _browse_output(self):

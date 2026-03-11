@@ -81,9 +81,12 @@ def fetch_wiki_story_sets() -> dict[int, list[dict]]:
             sets_by_year[year] = []
         sets_by_year[year].append(story_set)
 
-    # Add misc groups under a special year key (-1) so they sort last
-    if misc_groups:
-        sets_by_year[-1] = misc_groups
+    # Add misc groups under their proper year (based on published_date)
+    for group in misc_groups:
+        year = group.get("year", 0)
+        if year not in sets_by_year:
+            sets_by_year[year] = []
+        sets_by_year[year].append(group)
 
     return sets_by_year
 
