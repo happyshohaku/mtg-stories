@@ -5,7 +5,7 @@ Tkinter GUI for the MTG Stories to EPUB converter.
 import os
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from . import scraper, parser, epub_builder, wiki_scraper
 
@@ -23,6 +23,7 @@ class MTGStoriesApp:
         self.story_sets_by_year: dict[int, list[dict]] = {}
         self.listbox_items: list[dict | None] = []  # None for year headers
         self.output_dir = os.path.join(os.path.expanduser("~"), "Documents", "MTG-Stories")
+        self.selection_order: list[int] = []  # Track click order for multi-select
 
         # Build UI
         self._create_widgets()
@@ -77,7 +78,7 @@ class MTGStoriesApp:
 
         self.listbox = tk.Listbox(
             list_container,
-            selectmode=tk.SINGLE,
+            selectmode=tk.EXTENDED,
             font=("Segoe UI", 10),
             activestyle="dotbox"
         )
@@ -181,27 +182,44 @@ class MTGStoriesApp:
 
     def _on_select(self, event):
         """Handle listbox selection - prevent selecting year headers."""
-        selection = self.listbox.curselection()
+        selection = set(self.listbox.curselection())
         if not selection:
+            self.selection_order = []
+            self._clear_info()
+            self.generate_btn.config(text="Generate EPUB")
             return
 
-        index = selection[0]
-        if index < len(self.listbox_items):
-            item = self.listbox_items[index]
-            if item is None:
-                # This is a year header, deselect it
-                self.listbox.selection_clear(0, tk.END)
-                self.generate_btn.config(text="Generate EPUB")
-                self._clear_info()
+        # Deselect any year headers
+        for index in list(selection):
+            if index < len(self.listbox_items) and self.listbox_items[index] is None:
+                self.listbox.selection_clear(index)
+                selection.discard(index)
+
+        # Update click order: remove deselected, append newly selected
+        self.selection_order = [i for i in self.selection_order if i in selection]
+        for index in selection:
+            if index not in self.selection_order:
+                self.selection_order.append(index)
+
+        # Get valid selected sets in click order
+        selected = self._get_selected_story_sets()
+        if not selected:
+            self._clear_info()
+            self.generate_btn.config(text="Generate EPUB")
+            return
+
+        if len(selected) == 1:
+            item = selected[0]
+            stories = item.get("stories", [])
+            external_links = item.get("external_links", [])
+            if not stories and external_links:
+                self.generate_btn.config(text="Open Link")
             else:
-                # Update button text based on whether it's e-book only
-                stories = item.get("stories", [])
-                external_links = item.get("external_links", [])
-                if not stories and external_links:
-                    self.generate_btn.config(text="Open Link")
-                else:
-                    self.generate_btn.config(text="Generate EPUB")
-                self._show_info(item)
+                self.generate_btn.config(text="Generate EPUB")
+            self._show_info(item)
+        else:
+            self.generate_btn.config(text="Generate EPUB")
+            self._show_multi_info(selected)
 
     def _clear_info(self):
         """Clear the info panel."""
@@ -245,6 +263,28 @@ class MTGStoriesApp:
             if date_str:
                 parts.append(f"({date_str})")
             self.info_text.insert(tk.END, " — ".join(parts) + "\n", "story")
+
+        self.info_text.config(state="disabled")
+
+    def _show_multi_info(self, story_sets: list[dict]):
+        """Show combined summary when multiple story sets are selected."""
+        self.info_text.config(state="normal")
+        self.info_text.delete("1.0", tk.END)
+
+        indent = 20
+        self.info_text.tag_configure("bold", font=("Segoe UI", 9, "bold"))
+        self.info_text.tag_configure("story", font=("Segoe UI", 9),
+                                     lmargin1=indent, lmargin2=indent)
+
+        total_stories = sum(len(s.get("stories", [])) for s in story_sets)
+        self.info_text.insert(tk.END, f"{len(story_sets)} sets selected", "bold")
+        self.info_text.insert(tk.END, f"  ({total_stories} stories total)\n")
+
+        for story_set in story_sets:
+            name = story_set.get("name", "Unknown")
+            count = len(story_set.get("stories", []))
+            source = story_set.get("source", "official")
+            self.info_text.insert(tk.END, f"{name} ({count} stories, {source})\n", "story")
 
         self.info_text.config(state="disabled")
 
@@ -462,117 +502,284 @@ class MTGStoriesApp:
             self.output_dir = path
             self.output_var.set(path)
 
-    def _get_selected_story_set(self) -> dict | None:
-        """Get the currently selected story set, or None if a header is selected."""
-        selection = self.listbox.curselection()
-        if not selection:
-            return None
+    def _get_selected_story_sets(self) -> list[dict]:
+        """Get all currently selected story sets in click order, filtering out year headers."""
+        sets = []
+        for index in self.selection_order:
+            if index < len(self.listbox_items):
+                item = self.listbox_items[index]
+                if item is not None:
+                    sets.append(item)
+        return sets
 
-        index = selection[0]
-        if index < len(self.listbox_items):
-            return self.listbox_items[index]
-        return None
+    def _show_generate_dialog(self, story_sets: list[dict]) -> tuple[str, list[dict]] | None:
+        """Show a dialog to configure EPUB title and drag-and-drop reorder sets.
+        Returns (title, ordered_story_sets) or None if cancelled."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Generate Combined EPUB")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.minsize(400, 300)
+
+        frame = ttk.Frame(dialog, padding="15")
+        frame.grid(row=0, column=0, sticky="nsew")
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(3, weight=1)
+
+        # Title
+        ttk.Label(frame, text="EPUB Title:", font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 5))
+        auto_name = " + ".join(s.get("name", "Unknown") for s in story_sets)
+        title_var = tk.StringVar(value=auto_name)
+        title_entry = ttk.Entry(frame, textvariable=title_var)
+        title_entry.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        title_entry.select_range(0, tk.END)
+        title_entry.focus_set()
+
+        # Set order label + sort buttons
+        order_header = ttk.Frame(frame)
+        order_header.grid(row=2, column=0, sticky="ew", pady=(0, 5))
+        ttk.Label(order_header, text="Set Order (drag to reorder):",
+                  font=("Segoe UI", 9, "bold")).pack(side="left")
+
+        def _get_earliest_date(s):
+            """Get earliest story date for sorting."""
+            dates = [st.get("published_date") for st in s.get("stories", [])
+                     if st.get("published_date")]
+            return min(dates) if dates else parser.datetime.min
+
+        def sort_sets(reverse=False):
+            ordered_sets.sort(key=_get_earliest_date, reverse=reverse)
+            _refresh_drag_list()
+
+        ttk.Button(order_header, text="Date \u2193", width=7,
+                   command=lambda: sort_sets(reverse=True)).pack(side="right", padx=(5, 0))
+        ttk.Button(order_header, text="Date \u2191", width=7,
+                   command=lambda: sort_sets(reverse=False)).pack(side="right")
+
+        # Drag-and-drop listbox
+        list_frame = ttk.Frame(frame)
+        list_frame.grid(row=3, column=0, sticky="nsew", pady=(0, 15))
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+
+        drag_list = tk.Listbox(list_frame, font=("Segoe UI", 10), activestyle="none",
+                               selectmode=tk.SINGLE)
+        drag_list.grid(row=0, column=0, sticky="nsew")
+        drag_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=drag_list.yview)
+        drag_scrollbar.grid(row=0, column=1, sticky="ns")
+        drag_list.config(yscrollcommand=drag_scrollbar.set)
+
+        # Backing data — mutable list in dialog scope
+        ordered_sets = list(story_sets)
+
+        def _refresh_drag_list():
+            drag_list.delete(0, tk.END)
+            for s in ordered_sets:
+                count = len(s.get("stories", []))
+                label = "story" if count == 1 else "stories"
+                drag_list.insert(tk.END, f"  {s.get('name', 'Unknown')} ({count} {label})")
+
+        _refresh_drag_list()
+
+        # Drag-and-drop state
+        drag_data = {"index": None}
+
+        def drag_start(event):
+            index = drag_list.nearest(event.y)
+            if index >= 0:
+                drag_data["index"] = index
+                drag_list.selection_clear(0, tk.END)
+                drag_list.selection_set(index)
+
+        def drag_motion(event):
+            if drag_data["index"] is None:
+                return
+            target = drag_list.nearest(event.y)
+            current = drag_data["index"]
+            if target != current and 0 <= target < len(ordered_sets):
+                # Swap in backing list
+                ordered_sets[current], ordered_sets[target] = ordered_sets[target], ordered_sets[current]
+                # Update display
+                text_current = drag_list.get(current)
+                text_target = drag_list.get(target)
+                drag_list.delete(current)
+                drag_list.insert(current, text_target)
+                drag_list.delete(target)
+                drag_list.insert(target, text_current)
+                # Update drag state
+                drag_data["index"] = target
+                drag_list.selection_clear(0, tk.END)
+                drag_list.selection_set(target)
+
+        def drag_end(event):
+            drag_data["index"] = None
+
+        drag_list.bind("<Button-1>", drag_start)
+        drag_list.bind("<B1-Motion>", drag_motion)
+        drag_list.bind("<ButtonRelease-1>", drag_end)
+
+        # Result holder
+        result = [None]
+
+        def on_ok():
+            title = title_var.get().strip()
+            if title:
+                result[0] = (title, list(ordered_sets))
+            dialog.destroy()
+
+        def on_cancel():
+            dialog.destroy()
+
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=4, column=0, sticky="e")
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).grid(row=0, column=0)
+        ttk.Button(btn_frame, text="Generate", command=on_ok).grid(row=0, column=1, padx=(5, 0))
+
+        dialog.bind("<Return>", lambda e: on_ok())
+        dialog.bind("<Escape>", lambda e: on_cancel())
+
+        # Center on parent
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        dialog.wait_window()
+        return result[0]
 
     def _generate_epub(self):
-        """Generate EPUB for the selected story set."""
+        """Generate EPUB for the selected story set(s)."""
         import webbrowser
 
-        story_set = self._get_selected_story_set()
-        if not story_set:
+        selected = self._get_selected_story_sets()
+        if not selected:
             messagebox.showwarning("No Selection", "Please select a story set first (not a year header).")
             return
 
-        # Check if this is an e-book only entry
-        stories = story_set.get("stories", [])
-        external_links = story_set.get("external_links", [])
+        # Single selection: check for e-book only, then generate directly
+        if len(selected) == 1:
+            story_set = selected[0]
+            stories = story_set.get("stories", [])
+            external_links = story_set.get("external_links", [])
 
-        if not stories and external_links:
-            # Open external link in browser
-            link = external_links[0]
-            self._set_status(f"Opening e-book link: {link['title']}")
-            webbrowser.open(link["url"])
-            return
+            if not stories and external_links:
+                link = external_links[0]
+                self._set_status(f"Opening e-book link: {link['title']}")
+                webbrowser.open(link["url"])
+                return
+
+            epub_name = story_set["name"]
+            ordered_sets = selected
+        else:
+            # Multi-select: show dialog for title and set order
+            result = self._show_generate_dialog(selected)
+            if result is None:
+                return  # Cancelled
+            epub_name, ordered_sets = result
+
+        # Check if file already exists — prompt to overwrite or rename
+        safe_filename = "".join(c if c.isalnum() or c in " -_" else "_" for c in epub_name)
+        expected_path = os.path.join(self.output_dir, f"{safe_filename}.epub")
+        output_path = None
+
+        if os.path.exists(expected_path):
+            output_path = filedialog.asksaveasfilename(
+                initialdir=self.output_dir,
+                initialfile=f"{safe_filename}.epub",
+                title="File already exists — save as",
+                filetypes=[("EPUB files", "*.epub")],
+                defaultextension=".epub",
+            )
+            if not output_path:
+                return  # Cancelled
 
         self.generate_btn.config(state="disabled")
-        self._set_status(f"Generating EPUB for {story_set['name']}...")
+        self._set_status(f"Generating EPUB for {epub_name}...")
         self._set_progress(0)
 
         def generate():
             try:
-                result = self._do_generate(story_set)
+                result = self._do_generate(ordered_sets, epub_name, output_path)
                 self.root.after(0, lambda: self._generation_complete(result))
             except Exception as e:
                 self.root.after(0, lambda: self._show_error(f"Generation failed: {e}"))
 
         threading.Thread(target=generate, daemon=True).start()
 
-    def _do_generate(self, story_set: dict) -> str:
-        """Perform the actual EPUB generation."""
-        set_name = story_set["name"]
-        stories_info = story_set.get("stories", [])
+    def _do_generate(self, story_sets: list[dict], epub_name: str, output_path: str | None = None) -> str:
+        """Perform the actual EPUB generation for one or more story sets."""
+        # Count total stories across all sets
+        total_stories = sum(len(s.get("stories", [])) for s in story_sets)
+        if total_stories == 0:
+            raise Exception(f"No stories found for {epub_name}")
 
-        if not stories_info:
-            raise Exception(f"No stories found for {set_name}")
-
-        total_stories = len(stories_info)
         self._update_status(f"Found {total_stories} stories")
         self._update_progress(10)
 
-        # Fetch and parse each story
-        parsed_stories = []
+        # Fetch and parse stories, preserving set grouping
+        groups: list[tuple[str, list]] = []  # (set_name, [Story, ...])
         temp_dir = os.path.join(self.output_dir, ".temp_images")
         os.makedirs(temp_dir, exist_ok=True)
 
-        for i, info in enumerate(stories_info):
-            progress = 10 + (70 * (i / total_stories))
-            title = info.get("title", "Unknown")[:40]
-            self._update_status(f"Fetching story {i+1}/{total_stories}: {title}...")
-            self._update_progress(progress)
+        story_num = 0
+        for story_set in story_sets:
+            set_name = story_set.get("name", "Unknown")
+            parsed_in_group = []
 
-            try:
-                html = scraper.fetch_story_page(info["url"])
+            for info in story_set.get("stories", []):
+                story_num += 1
+                progress = 10 + (70 * (story_num / total_stories))
+                title = info.get("title", "Unknown")[:40]
+                self._update_status(f"Fetching story {story_num}/{total_stories}: {title}...")
+                self._update_progress(progress)
 
-                # For wiki-sourced stories, pass fallback metadata
-                # (author and date from wiki catalog, in case page parsing fails)
-                story = parser.parse_story(
-                    html,
-                    info["url"],
-                    fallback_author=info.get("author"),
-                    fallback_date=info.get("published_date"),
-                    fallback_title=info.get("title"),
-                )
+                try:
+                    html = scraper.fetch_story_page(info["url"])
 
-                # Override publication date from API/wiki if available
-                if info.get("published_date"):
-                    story.publication_date = info["published_date"]
+                    story = parser.parse_story(
+                        html,
+                        info["url"],
+                        fallback_author=info.get("author"),
+                        fallback_date=info.get("published_date"),
+                        fallback_title=info.get("title"),
+                    )
 
-                # Download images
-                if story.images:
-                    parser.download_images(story.images, temp_dir)
+                    if info.get("published_date"):
+                        story.publication_date = info["published_date"]
 
-                parsed_stories.append(story)
-            except Exception as e:
-                print(f"Failed to fetch story {info['url']}: {e}")
-                continue
+                    if story.images:
+                        parser.download_images(story.images, temp_dir)
 
-        if not parsed_stories:
+                    parsed_in_group.append(story)
+                except Exception as e:
+                    print(f"Failed to fetch story {info['url']}: {e}")
+                    continue
+
+            if parsed_in_group:
+                groups.append((set_name, parsed_in_group))
+
+        all_stories = [story for _, stories in groups for story in stories]
+        if not all_stories:
             raise Exception("Failed to fetch any stories")
 
-        # Sort by publication date
-        self._update_status("Sorting stories by date...")
         self._update_progress(85)
 
-        parsed_stories.sort(key=lambda s: s.publication_date or parser.datetime.min)
-
-        # Find cover image
+        # Find cover image — use first set with an image_url
         cover_path = None
-        if story_set.get("image_url"):
-            self._update_status("Downloading cover image...")
-            cover_path = parser.download_image(story_set["image_url"], temp_dir)
+        for story_set in story_sets:
+            if story_set.get("image_url"):
+                self._update_status("Downloading cover image...")
+                cover_path = parser.download_image(story_set["image_url"], temp_dir)
+                if cover_path:
+                    break
 
-        # If no cover from set, use first story image
         if not cover_path:
-            for story in parsed_stories:
+            for story in all_stories:
                 for img in story.images:
                     if img.get("local_path"):
                         cover_path = img["local_path"]
@@ -584,11 +791,16 @@ class MTGStoriesApp:
         self._update_status("Building EPUB...")
         self._update_progress(90)
 
-        output_path = epub_builder.create_epub(
-            stories=parsed_stories,
-            set_name=set_name,
+        # Use grouped TOC for multi-set, flat for single-set
+        use_groups = groups if len(story_sets) > 1 else None
+
+        final_path = epub_builder.create_epub(
+            stories=all_stories,
+            set_name=epub_name,
             output_dir=self.output_dir,
-            cover_image_path=cover_path
+            cover_image_path=cover_path,
+            groups=use_groups,
+            output_path=output_path,
         )
 
         # Clean up temp images folder
@@ -597,7 +809,7 @@ class MTGStoriesApp:
             shutil.rmtree(temp_dir)
 
         self._update_progress(100)
-        return output_path
+        return final_path
 
     def _update_status(self, message: str):
         """Thread-safe status update."""

@@ -175,15 +175,25 @@ pre {
 """
 
 
-def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_image_path: str | None = None) -> str:
+def create_epub(
+    stories: list[Story],
+    set_name: str,
+    output_dir: str,
+    cover_image_path: str | None = None,
+    groups: list[tuple[str, list[Story]]] | None = None,
+    output_path: str | None = None,
+) -> str:
     """
     Create an EPUB file from a list of stories.
 
     Args:
-        stories: List of Story objects, should be sorted by publication date.
+        stories: List of Story objects (flat, used for images/author extraction).
         set_name: Name of the story set (used for title).
         output_dir: Directory to save the EPUB file.
         cover_image_path: Optional path to cover image.
+        groups: Optional grouped structure for nested TOC.
+                Each entry is (group_name, [Story, ...]).
+                When provided, TOC uses sections for multi-story groups.
 
     Returns:
         Path to the created EPUB file.
@@ -245,13 +255,35 @@ def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_imag
 
     # Create chapters (pass image mapping for filename updates)
     chapters = []
-    for i, story in enumerate(stories):
-        chapter = _create_chapter(story, i + 1, css, image_items)
-        book.add_item(chapter)
-        chapters.append(chapter)
+    if groups:
+        # Grouped mode: build chapters per group for nested TOC
+        toc = []
+        chapter_num = 0
+        for group_name, group_stories in groups:
+            group_chapters = []
+            for story in group_stories:
+                chapter_num += 1
+                chapter = _create_chapter(story, chapter_num, css, image_items)
+                book.add_item(chapter)
+                chapters.append(chapter)
+                group_chapters.append(chapter)
 
-    # Create table of contents
-    book.toc = [(chapter, []) for chapter in chapters]
+            if len(group_chapters) == 1:
+                # Single-story group: flat TOC entry
+                toc.append((group_chapters[0], []))
+            else:
+                # Multi-story group: nested under a section
+                toc.append((epub.Section(group_name), group_chapters))
+
+        book.toc = toc
+    else:
+        # Flat mode (single set): current behavior
+        for i, story in enumerate(stories):
+            chapter = _create_chapter(story, i + 1, css, image_items)
+            book.add_item(chapter)
+            chapters.append(chapter)
+
+        book.toc = [(chapter, []) for chapter in chapters]
 
     # Add navigation files
     book.add_item(epub.EpubNcx())
@@ -261,10 +293,12 @@ def create_epub(stories: list[Story], set_name: str, output_dir: str, cover_imag
     book.spine = ["nav"] + chapters
 
     # Save the book
-    os.makedirs(output_dir, exist_ok=True)
-    safe_filename = "".join(c if c.isalnum() or c in " -_" else "_" for c in set_name)
-    output_path = os.path.join(output_dir, f"{safe_filename}.epub")
+    if not output_path:
+        os.makedirs(output_dir, exist_ok=True)
+        safe_filename = "".join(c if c.isalnum() or c in " -_" else "_" for c in set_name)
+        output_path = os.path.join(output_dir, f"{safe_filename}.epub")
 
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     epub.write_epub(output_path, book)
 
     return output_path
