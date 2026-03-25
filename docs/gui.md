@@ -8,6 +8,10 @@ The GUI module provides a Tkinter-based graphical interface for:
 - Browsing available story sets from three data sources
 - Real-time search filtering by set name or story title
 - Viewing story details (title, author, date) in a details panel
+- Multi-select story sets for combined EPUB generation
+- Drag-and-drop reorder dialog for multi-set EPUBs with date sorting
+- Grouped table of contents when combining multiple sets
+- File-exists detection with save-as dialog
 - Selecting output directory
 - Triggering EPUB generation
 - Displaying progress and status
@@ -27,6 +31,7 @@ def __init__(self, root: tk.Tk):
     self.story_sets_by_year: dict[int, list[dict]] = {}
     self.listbox_items: list[dict | None] = []  # None for year headers
     self.output_dir = os.path.join(os.path.expanduser("~"), "Documents", "MTG-Stories")
+    self.selection_order: list[int] = []  # Track click order for multi-select
 
     self._create_widgets()
     self.root.after(100, self._refresh_sets)  # Auto-fetch on startup
@@ -112,6 +117,11 @@ Populates the details Text widget with story set info using styled tags:
 - **bold** — set name
 - **story** — per-story line with title, author, date (indented 20px)
 
+Shown for single-selection only.
+
+#### _show_multi_info(story_sets: list[dict])
+Shows a combined summary when multiple sets are selected: count of sets, total story count, and per-set name/count/source.
+
 #### _clear_info()
 Clears the details panel.
 
@@ -192,33 +202,58 @@ self.listbox_items: list[dict | None]
 ### Event Handlers
 
 #### _on_select(event)
-Handles listbox selection changes.
+Handles listbox selection changes. Supports multi-select (EXTENDED mode).
 
 **Behavior:**
-- If year header selected → deselect it, clear details panel
-- If story set with stories → button shows "Generate EPUB", show details
-- If e-book only entry → button shows "Open Link"
+- Year headers are automatically deselected
+- Tracks selection order via `self.selection_order` (click order, not index order)
+- Single selection: shows details panel, button shows "Generate EPUB" or "Open Link"
+- Multiple selection: shows combined summary via `_show_multi_info()`, button shows "Generate EPUB"
 
 #### _browse_output()
 Opens a folder browser dialog and updates the output directory.
 
 ---
 
+### Selection Methods
+
+#### _get_selected_story_sets() -> list[dict]
+Returns all currently selected story sets in click order, filtering out year headers. Replaces the old `_get_selected_story_set()` method.
+
+#### _show_multi_info(story_sets: list[dict])
+Shows a combined summary in the details panel when multiple sets are selected: total count, per-set name/count/source.
+
+---
+
 ### Generation Methods
 
 #### _generate_epub()
-Main generation entry point. Handles both EPUB generation and external link opening.
+Main generation entry point. Handles single-select (direct generation or link opening) and multi-select (shows reorder dialog first).
 
-#### _do_generate(story_set: dict) -> str
-Performs the actual EPUB generation in a background thread.
+#### _show_generate_dialog(story_sets: list[dict]) -> tuple[str, list[dict]] | None
+Modal dialog for multi-set EPUB generation. Returns `(title, ordered_story_sets)` or `None` if cancelled.
+
+**Features:**
+- Editable EPUB title (defaults to "Set A + Set B + ...")
+- Drag-and-drop reorderable list of selected sets
+- "Date ↑" / "Date ↓" sort buttons (by earliest story date)
+- Generate / Cancel buttons
+
+#### _do_generate(story_sets: list[dict], epub_name: str, output_path: str | None) -> str
+Performs the actual EPUB generation in a background thread. Accepts one or more story sets.
+
+**Multi-set behavior:**
+- Fetches/parses stories preserving set grouping as `(set_name, [Story, ...])` tuples
+- Passes groups to `epub_builder.create_epub()` for nested TOC (multi-set only)
+- Single-set uses flat TOC as before
+- If output file already exists, prompts with save-as dialog before starting
 
 **Progress Updates:**
 | Progress | Action |
 |----------|--------|
 | 0% | Start |
 | 10% | Found stories |
-| 10-80% | Fetching/parsing stories |
-| 85% | Sorting stories |
+| 10-85% | Fetching/parsing stories across all sets |
 | 90% | Building EPUB |
 | 100% | Complete |
 

@@ -90,13 +90,17 @@ Display grouped by year in listbox (with search/filter)
 
 ### 2. EPUB Generation Flow
 ```
-User clicks "Generate EPUB"
+User selects one or more story sets
        │
        ▼
-Get selected story set
+Single set? ──► Generate directly
+Multiple sets? ──► Show reorder dialog (title, drag-and-drop order, date sort)
        │
        ▼
-For each story in set:
+Check if output file exists → save-as dialog if so
+       │
+       ▼
+For each story set, for each story:
    │
    ├──► Fetch HTML page (scraper)
    │
@@ -105,10 +109,10 @@ For each story in set:
    └──► Download images (parser)
        │
        ▼
-Sort stories by publication date
-       │
-       ▼
 Build EPUB (epub_builder)
+   │
+   ├──► Single set: flat table of contents
+   └──► Multiple sets: grouped TOC with section headers per set
        │
        ▼
 Save to output directory
@@ -122,8 +126,11 @@ Show success message
 ### gui.py
 - Window layout and widgets (search bar, listbox, details panel, controls)
 - Real-time search filtering by set name and story titles
-- Details panel showing story info on selection
+- Multi-select support with click-order tracking
+- Details panel showing story info (single) or combined summary (multi)
+- Reorder dialog with drag-and-drop and date sorting for combined EPUBs
 - 3-source fetch, enrichment, dedup, and merge orchestration
+- File-exists detection with save-as dialog
 - User interaction handling
 - Threading for background operations
 - Progress and status updates
@@ -153,8 +160,9 @@ Show success message
 - CSS styling
 - Chapter generation
 - Image embedding and format conversion
-- Table of contents generation
+- Table of contents generation (flat or grouped/nested for multi-set EPUBs)
 - Cover image with title overlay
+- Custom output path support
 
 ## Threading Model
 

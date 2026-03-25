@@ -74,15 +74,17 @@ table {
 
 ## Functions
 
-### create_epub(stories, set_name, output_dir, cover_image_path) -> str
+### create_epub(stories, set_name, output_dir, cover_image_path, groups, output_path) -> str
 
 **Purpose:** Main entry point - create an EPUB file from stories.
 
 **Parameters:**
-- `stories` - List of Story objects (should be sorted by publication date)
+- `stories` - List of Story objects (flat list, used for image collection and author extraction)
 - `set_name` - Name of the story set (used for title)
-- `output_dir` - Directory to save the EPUB
+- `output_dir` - Directory to save the EPUB (used when `output_path` is not provided)
 - `cover_image_path` - Optional path to cover image
+- `groups` - Optional grouped structure for nested TOC. Each entry is `(group_name, [Story, ...])`. When provided, multi-story groups get a TOC section header; single-story groups get a flat entry.
+- `output_path` - Optional explicit output file path. When provided, overrides `output_dir` and filename generation.
 
 **Returns:** Path to the created EPUB file.
 
@@ -99,8 +101,9 @@ Create EpubBook
        ├──► Collect and convert all images
        │
        ├──► Create chapters (one per story)
-       │
-       ├──► Build table of contents
+       │       │
+       │       ├──► Flat mode (no groups): chapters in order, flat TOC
+       │       └──► Grouped mode: chapters per group, nested TOC sections
        │
        ├──► Add navigation files (NCX, Nav)
        │
@@ -123,8 +126,11 @@ for author in authors:
 
 **File Naming:**
 ```python
+# When output_path is not provided, generates filename from set_name:
 safe_filename = "".join(c if c.isalnum() or c in " -_" else "_" for c in set_name)
 output_path = os.path.join(output_dir, f"{safe_filename}.epub")
+
+# When output_path is provided (e.g., from save-as dialog), uses it directly.
 ```
 
 ---

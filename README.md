@@ -13,8 +13,9 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 - Details panel showing story titles, authors, and dates on selection
 - Story sets grouped by year with newest first
 - Generate EPUB files with all episodes and side stories
-- Stories automatically sorted by publication date
-- Table of contents with chapter links
+- Multi-select story sets to combine into a single EPUB
+- Drag-and-drop reorder dialog with date sorting for combined EPUBs
+- Table of contents with chapter links (nested sections for multi-set EPUBs)
 - Preserved original styling (headers, italics, lists, tables)
 - Embedded images converted to Kindle-compatible format
 - Professional cover image with title overlay (1600x2560, standard book ratio)
@@ -70,10 +71,11 @@ python -m main
 
 1. The application will automatically fetch available story sets on startup
 2. Click "Refresh Sets" to reload the story list from the website
-3. Select a story set from the list (year headers are not selectable)
+3. Select one or more story sets from the list (Ctrl+click or Shift+click to multi-select; year headers are not selectable)
 4. Choose an output directory using "Browse..."
 5. Click "Generate EPUB" to create the e-book
-   - For e-book only entries, the button shows "Open Link" and opens the external link in your browser
+   - For a single set with only an external e-book link, the button shows "Open Link"
+   - For multiple sets, a dialog lets you edit the EPUB title and reorder sets via drag-and-drop
 6. Once complete, you'll be prompted to open the output folder
 
 ### Output
