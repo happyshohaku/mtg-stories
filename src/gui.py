@@ -303,6 +303,8 @@ class MTGStoriesApp:
         self._set_status("Fetching story sets...")
         self.generate_btn.config(state="disabled")
         self.progress_var.set(0)
+        self.progress_bar.config(mode="indeterminate")
+        self.progress_bar.start(15)
 
         def fetch():
             contentful_sets = {}
@@ -404,6 +406,9 @@ class MTGStoriesApp:
 
     def _update_sets_list(self, sets_by_year: dict[int, list[dict]], preserve_search: bool = False):
         """Update the listbox with fetched story sets grouped by year."""
+        self.progress_bar.stop()
+        self.progress_bar.config(mode="determinate")
+        self.progress_var.set(0)
         if not preserve_search:
             self.story_sets_by_year = sets_by_year
         self.listbox.delete(0, tk.END)
