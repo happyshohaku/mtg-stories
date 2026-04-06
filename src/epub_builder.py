@@ -577,6 +577,9 @@ def _convert_image_for_kindle(local_path: str, original_filename: str) -> tuple[
     if ext == ".gif":
         with open(local_path, "rb") as f:
             return f.read(), original_filename, "image/gif"
+    if ext == ".svg":
+        with open(local_path, "rb") as f:
+            return f.read(), original_filename, "image/svg+xml"
 
     # Convert webp, png, and other formats to JPEG
     try:
