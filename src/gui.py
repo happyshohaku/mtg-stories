@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from . import scraper, parser, epub_builder, wiki_scraper
+from . import __version__
 
 
 class MTGStoriesApp:
@@ -15,7 +16,7 @@ class MTGStoriesApp:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("MTG Stories to EPUB")
+        self.root.title(f"MTG Stories to EPUB v{__version__}")
         self.root.geometry("600x650")
         self.root.minsize(500, 550)
 

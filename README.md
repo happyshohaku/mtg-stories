@@ -1,5 +1,7 @@
 # MTG Stories to EPUB Converter
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/happyshohaku/mtg-stories/releases)
+
 A Python GUI application that scrapes Magic: The Gathering stories from the official Wizards of the Coast website and generates EPUB files for e-reader devices like Kindle.
 
 ## Features
@@ -92,7 +94,7 @@ EPUB files are saved to `~/Documents/MTG-Stories/` by default. The filename matc
 ```
 mtg-stories/
 ├── src/
-│   ├── __init__.py       # Package marker
+│   ├── __init__.py       # Package marker + version constant
 │   ├── main.py           # Entry point
 │   ├── gui.py            # Tkinter GUI application
 │   ├── scraper.py        # Contentful API (storyGroups + articles)

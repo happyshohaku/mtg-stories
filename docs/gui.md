@@ -23,7 +23,7 @@ The GUI module provides a Tkinter-based graphical interface for:
 ```python
 def __init__(self, root: tk.Tk):
     self.root = root
-    self.root.title("MTG Stories to EPUB")
+    self.root.title(f"MTG Stories to EPUB v{__version__}")
     self.root.geometry("600x650")
     self.root.minsize(500, 550)
 
@@ -41,7 +41,7 @@ def __init__(self, root: tk.Tk):
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  MTG Stories to EPUB                    (Header)    │
+│  MTG Stories to EPUB v1.0.0             (Header)    │
 ├─────────────────────────────────────────────────────┤
 │  Story Sets (by Year)                               │
 │  Search: [________________________]                 │
@@ -80,7 +80,7 @@ def __init__(self, root: tk.Tk):
 root (Tk)
 └── main_frame (Frame)
     ├── header_frame (Frame)
-    │   └── Label "MTG Stories to EPUB"
+    │   └── Label "MTG Stories to EPUB v{__version__}"
     ├── list_frame (LabelFrame "Story Sets")
     │   ├── search_frame (Frame)
     │   │   ├── Label "Search:"

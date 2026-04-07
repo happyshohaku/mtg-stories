@@ -221,3 +221,4 @@ Currently hardcoded values (could be made configurable):
 | `output_dir` | gui.py | Default output path |
 | `EPUB_CSS` | epub_builder.py | EPUB styling |
 | Wiki URL | wiki_scraper.py | mtg.wiki story list page |
+| `__version__` | __init__.py | App version (shown in title bar) |
