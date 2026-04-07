@@ -17,7 +17,7 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 - Drag-and-drop reorder dialog with date sorting for combined EPUBs
 - Table of contents with chapter links (nested sections for multi-set EPUBs)
 - Preserved original styling (headers, italics, lists, tables)
-- Embedded images converted to Kindle-compatible format
+- Embedded images converted to Kindle-compatible format (SVG pass-through)
 - Professional cover image with title overlay (1600x2560, standard book ratio)
 - Direct links to external e-books (Amazon, etc.) for e-book only entries
 
@@ -54,22 +54,27 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 
 ## Running the Application
 
-### GUI Mode (Default)
+### From Source
 
 ```bash
 python -m src.main
 ```
 
-Or run directly:
+### Standalone Executable
+
+Build a standalone `.exe` (no Python required):
 
 ```bash
-cd src
-python -m main
+# Double-click build_exe.bat, or run manually:
+pip install pyinstaller
+pyinstaller mtg_stories.spec
 ```
+
+The executable is created at `dist/MTG to EPUB.exe`.
 
 ### Using the Application
 
-1. The application will automatically fetch available story sets on startup
+1. The application will automatically fetch available story sets on startup (results appear progressively as each source loads)
 2. Click "Refresh Sets" to reload the story list from the website
 3. Select one or more story sets from the list (Ctrl+click or Shift+click to multi-select; year headers are not selectable)
 4. Choose an output directory using "Browse..."
@@ -95,6 +100,9 @@ mtg-stories/
 │   ├── parser.py         # HTML parsing & content extraction
 │   └── epub_builder.py   # EPUB file generation
 ├── docs/                 # Documentation SOPs
+├── run.py                # PyInstaller entry point
+├── mtg_stories.spec      # PyInstaller build config
+├── build_exe.bat         # One-click build script
 ├── requirements.txt      # Python dependencies
 ├── .gitignore
 └── README.md

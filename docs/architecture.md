@@ -73,19 +73,20 @@ GUI Initializes
        │
        ▼
 Auto-fetch story sets (after 100ms delay)
+Indeterminate progress bar starts
        │
-       ├──► Fetch storyGroups from Contentful API
+       ├──► Fetch storyGroups from Contentful API (years fetched in parallel via ThreadPoolExecutor)
+       │       └──► Display results immediately (progressive loading)
        ├──► Fetch articles from Contentful API
        │       ├──► Enrich storyGroup stories with article metadata
-       │       └──► Dedup articles against storyGroups
+       │       ├──► Dedup articles against storyGroups
+       │       └──► Display updated results (progressive loading)
        └──► Fetch stories from mtg.wiki
-               └──► Dedup wiki against storyGroups + articles
+               ├──► Dedup wiki against storyGroups + articles
+               └──► Display final results (progressive loading)
        │
        ▼
-Merge all three sources
-       │
-       ▼
-Display grouped by year in listbox (with search/filter)
+Progress bar stops
 ```
 
 ### 2. EPUB Generation Flow
@@ -137,7 +138,7 @@ Show success message
 
 ### scraper.py
 - Contentful API communication
-- Story set metadata retrieval (storyGroups)
+- Story set metadata retrieval (storyGroups) — parallel year fetching via `ThreadPoolExecutor(max_workers=6)`
 - Individual article fetching and title-prefix grouping
 - Slug extraction and dedup utilities
 - Individual story page downloading
@@ -185,6 +186,9 @@ Key points:
 - Background threads are daemon threads (exit when main thread exits)
 - UI updates use `root.after(0, callback)` to run on main thread
 - Status/progress updates also use `root.after()` for thread safety
+- Fetch thread uses `try/finally` to guarantee progress bar cleanup
+- Indeterminate progress bar animates during story fetch; determinate during EPUB generation
+- Listbox updates progressively after each fetch phase (storyGroups → articles → wiki)
 
 ## Error Handling
 

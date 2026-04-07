@@ -319,6 +319,10 @@ class MTGStoriesApp:
                 except Exception as e:
                     print(f"Failed to fetch Contentful story sets: {e}")
 
+                # Show storyGroups immediately
+                merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
+                self.root.after(0, lambda m=merged: self._update_sets_list(m))
+
                 # Fetch from Contentful API — individual articles
                 try:
                     self.root.after(0, lambda: self._set_status("Fetching article archive..."))
@@ -357,6 +361,10 @@ class MTGStoriesApp:
                         article_sets = raw_article_sets
                 except Exception as e:
                     print(f"Failed to fetch article story sets: {e}")
+
+                # Show storyGroups + articles
+                merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
+                self.root.after(0, lambda m=merged: self._update_sets_list(m))
 
                 # Fetch from mtg.wiki
                 try:

@@ -5,6 +5,7 @@ Uses the Contentful API to get story sets and metadata.
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -33,13 +34,16 @@ def fetch_all_story_sets() -> dict[int, list[dict]]:
     """
     all_sets = {}
 
-    for year in YEARS:
-        try:
-            sets = _fetch_story_sets_for_year(year)
-            if sets:
-                all_sets[year] = sets
-        except Exception as e:
-            print(f"Failed to fetch year {year}: {e}")
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {pool.submit(_fetch_story_sets_for_year, year): year for year in YEARS}
+        for future in as_completed(futures):
+            year = futures[future]
+            try:
+                sets = future.result()
+                if sets:
+                    all_sets[year] = sets
+            except Exception as e:
+                print(f"Failed to fetch year {year}: {e}")
 
     return all_sets
 

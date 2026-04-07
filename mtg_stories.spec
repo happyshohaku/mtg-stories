@@ -21,7 +21,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MTG Stories to EPUB',
+    name='MTG to EPUB',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

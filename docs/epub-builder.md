@@ -263,6 +263,7 @@ f"chapter_{chapter_num:02d}_{safe_title}.xhtml"
 |-----------------|--------|---------------|
 | JPEG | Pass through | JPEG |
 | GIF | Pass through | GIF |
+| SVG | Pass through | SVG |
 | WebP | Convert to JPEG | JPEG |
 | PNG | Convert to JPEG | JPEG |
 | PNG (transparent) | Convert with white background | JPEG |

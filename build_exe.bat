@@ -7,5 +7,5 @@ echo Building executable...
 pyinstaller mtg_stories.spec
 
 echo.
-echo Done! Executable is at: dist\MTG Stories to EPUB.exe
+echo Done! Executable is at: dist\MTG to EPUB.exe
 pause

@@ -35,12 +35,15 @@ YEARS = list(range(datetime.now().year, 2013, -1))  # Current year down to 2014
 
 **Flow:**
 ```
-For each year in YEARS:
-   └──► _fetch_story_sets_for_year(year)
-        └──► Returns list of story sets
-   └──► Add to all_sets dict
+ThreadPoolExecutor(max_workers=6):
+   For all years in YEARS (in parallel):
+      └──► _fetch_story_sets_for_year(year)
+           └──► Returns list of story sets
+      └──► Add to all_sets dict
 Return all_sets
 ```
+
+**Performance:** Years are fetched in parallel (6 concurrent requests) using `concurrent.futures.ThreadPoolExecutor`, reducing total fetch time from ~13x a single request to roughly the time of the slowest single request.
 
 **Story Set Dict Structure:**
 ```python

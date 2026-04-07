@@ -140,29 +140,29 @@ Updates the progress bar (0-100 scale). Calls `root.update_idletasks()`.
 ### Data Methods
 
 #### _refresh_sets()
-Fetches story sets from all three sources in a background thread.
+Fetches story sets from all three sources in a background thread. Uses an indeterminate progress bar and progressive loading (listbox updates after each phase).
 
 **Flow:**
 ```
 Disable generate button
+Start indeterminate progress bar (50ms interval)
 Set status "Fetching..."
        │
        ▼
-Background thread:
+Background thread (wrapped in try/finally for progress bar cleanup):
   ├── scraper.fetch_all_story_sets()        → contentful_sets
+  │     └── _update_sets_list() ← progressive update
   ├── scraper.fetch_article_story_sets()    → raw_article_sets
   │     ├── Build article_metadata lookup (slug → author/excerpt)
   │     ├── Enrich contentful_sets stories with article metadata
-  │     └── filter_article_sets() against storyGroup slugs
+  │     ├── filter_article_sets() against storyGroup slugs
+  │     └── _update_sets_list() ← progressive update
   └── wiki_scraper.fetch_wiki_story_sets()  → raw_wiki_sets
-        └── filter_wiki_sets() against storyGroup + article slugs
+        ├── filter_wiki_sets() against storyGroup + article slugs
+        └── _update_sets_list() ← final update
        │
        ▼
-_merge_story_sets(contentful, articles, wiki)
-       │
-       ▼
-Main thread (via root.after):
-  └── _update_sets_list(merged)
+finally: stop progress bar, reset to determinate mode
 ```
 
 #### _merge_story_sets(contentful_sets, article_sets, wiki_sets)
