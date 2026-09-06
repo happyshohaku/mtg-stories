@@ -377,17 +377,16 @@ def _url_to_filename(url: str) -> str:
     # Create a hash of the full URL for uniqueness
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
 
-    # Get extension
-    _, ext = os.path.splitext(original_name)
+    # Split extension so truncation never cuts it off; default to .jpg when
+    # the URL has none (the conversion step turns the bytes into JPEG anyway)
+    stem, ext = os.path.splitext(original_name)
     if not ext:
-        ext = ".jpg"  # Default extension
+        ext = ".jpg"
 
-    # Create safe filename
-    safe_name = re.sub(r'[^\w\-.]', '_', original_name)
-    if len(safe_name) > 50:
-        safe_name = safe_name[:50]
+    safe_stem = re.sub(r'[^\w\-]', '_', stem)[:50] or "image"
+    safe_ext = re.sub(r'[^\w.]', '_', ext)[:10]
 
-    return f"{url_hash}_{safe_name}"
+    return f"{url_hash}_{safe_stem}{safe_ext}"
 
 
 def _fetch_image(url: str, output_dir: str, cancel: "threading.Event | None" = None) -> str:

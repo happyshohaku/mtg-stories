@@ -62,6 +62,15 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 python -m src.main
 ```
 
+### Running the Tests
+
+Offline unit tests covering dedup, date parsing, the wiki table parser, the page parser, EPUB assembly and the HTTP retry layer (which uses a local mock server):
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
 ### Standalone Executable
 
 Build a standalone `.exe` (no Python required):
@@ -105,11 +114,13 @@ mtg-stories/
 │   ├── dedup.py          # Cross-source dedup keys
 │   ├── dates.py          # Shared date parsing
 │   └── log.py            # Logging setup (stderr only, no files written)
+├── tests/                # pytest suite (offline)
 ├── docs/                 # Documentation SOPs
 ├── run.py                # PyInstaller entry point
 ├── mtg_stories.spec      # PyInstaller build config
 ├── build_exe.bat         # One-click build script
 ├── requirements.txt      # Python dependencies
+├── requirements-dev.txt  # + pytest
 ├── .gitignore
 └── README.md
 ```
