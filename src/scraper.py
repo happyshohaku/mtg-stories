@@ -4,19 +4,19 @@ Uses the Contentful API to get story sets and metadata.
 """
 
 import re
-import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from urllib.parse import urlparse
 
-import requests
+from . import dedup
+from . import net
 
 BASE_URL = "https://magic.wizards.com"
 CONTENTFUL_API = "https://cdn.contentful.com/spaces/s5n2t79q9icq/environments/master/entries"
 CONTENTFUL_TOKEN = "CPET-V_EFhnj_qi1lfps9BH3Se6V1B_bxE1J1VYi7qo"
 
+# Only sent to the Contentful API — never to story pages or other hosts.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Authorization": f"Bearer {CONTENTFUL_TOKEN}"
 }
 
@@ -57,12 +57,7 @@ def _fetch_story_sets_for_year(year: int) -> list[dict]:
         "fields.firstStoryYear[in]": str(year)
     }
 
-    response = requests.get(
-        CONTENTFUL_API,
-        params=params,
-        headers=HEADERS,
-        timeout=30
-    )
+    response = net.get(CONTENTFUL_API, params=params, headers=HEADERS, timeout=net.DEFAULT_TIMEOUT)
     response.raise_for_status()
     data = response.json()
 
@@ -178,7 +173,7 @@ def fetch_stories_for_set(story_set: dict) -> list[dict]:
     return story_set.get("stories", [])
 
 
-def fetch_story_page(url: str) -> str:
+def fetch_story_page(url: str, cancel: "threading.Event | None" = None) -> str:
     """
     Download an individual story page.
 
@@ -186,6 +181,7 @@ def fetch_story_page(url: str) -> str:
 
     Args:
         url: The full URL of the story.
+        cancel: Optional event; raises net.Cancelled promptly when set.
 
     Returns:
         HTML content of the story page.
@@ -194,17 +190,9 @@ def fetch_story_page(url: str) -> str:
 
     # Add a small delay to be respectful to the server
     # Longer delay for archive.org which rate-limits more aggressively
-    time.sleep(1.0 if is_archive else 0.5)
+    net.wait(1.0 if is_archive else 0.5, cancel)
 
-    # Use appropriate timeout — archive.org can be slow
-    timeout = 60 if is_archive else 30
-
-    response = requests.get(
-        url,
-        headers={"User-Agent": HEADERS["User-Agent"]},
-        timeout=timeout,
-        allow_redirects=True,
-    )
+    response = net.get(url, cancel=cancel)
     response.raise_for_status()
     return response.text
 
@@ -286,12 +274,7 @@ def _fetch_all_articles() -> list[dict]:
             "include": "1",
         }
 
-        response = requests.get(
-            CONTENTFUL_API,
-            params=params,
-            headers=HEADERS,
-            timeout=30,
-        )
+        response = net.get(CONTENTFUL_API, params=params, headers=HEADERS, timeout=net.DEFAULT_TIMEOUT)
         response.raise_for_status()
         data = response.json()
 
@@ -355,19 +338,20 @@ def _fetch_all_articles() -> list[dict]:
 
 def get_storygroup_slugs(storygroup_sets: dict[int, list[dict]]) -> set[str]:
     """
-    Extract all story slugs/URLs from storyGroup results for deduplication.
+    Extract all story slugs/URL paths from storyGroup results for deduplicating
+    the article archive against them.
 
-    Returns:
-        Set of normalized slugs and URL paths.
+    Only URL-derived keys are used here: both sources come from Contentful with
+    real slugs, so title matching is unnecessary and would risk false positives.
     """
     slugs = set()
-    for year, sets in storygroup_sets.items():
+    for sets in storygroup_sets.values():
         for story_set in sets:
             for story in story_set.get("stories", []):
                 if story.get("slug"):
                     slugs.add(story["slug"].lower().strip())
-                if story.get("url"):
-                    path = urlparse(story["url"]).path.rstrip("/").lower()
+                path = dedup.url_path_key(story.get("url"))
+                if path:
                     slugs.add(path)
     return slugs
 
@@ -390,9 +374,7 @@ def filter_article_sets(
             filtered_stories = []
             for story in story_set.get("stories", []):
                 slug = story.get("slug", "").lower().strip()
-                url_path = ""
-                if story.get("url"):
-                    url_path = urlparse(story["url"]).path.rstrip("/").lower()
+                url_path = dedup.url_path_key(story.get("url"))
 
                 is_duplicate = (
                     (slug and slug in known_slugs) or
@@ -414,19 +396,14 @@ def filter_article_sets(
 
 
 def get_article_slugs(article_sets: dict[int, list[dict]]) -> set[str]:
-    """Extract all slugs from article sets for wiki deduplication."""
-    slugs = set()
-    for year, sets in article_sets.items():
+    """
+    Extract all dedup keys (slugs, URL paths, scoped/specific titles) from
+    article sets for wiki deduplication. See dedup.story_keys().
+    """
+    keys: set[str] = set()
+    for sets in article_sets.values():
         for story_set in sets:
+            set_names = [story_set.get("name")]
             for story in story_set.get("stories", []):
-                if story.get("slug"):
-                    slugs.add(story["slug"].lower().strip())
-                if story.get("url"):
-                    path = urlparse(story["url"]).path.rstrip("/").lower()
-                    slugs.add(path)
-                if story.get("title"):
-                    # Title-based slug for fuzzy matching
-                    title_slug = re.sub(r'[^a-z0-9\s-]', '', story["title"].lower())
-                    title_slug = re.sub(r'[\s]+', '-', title_slug).strip('-')
-                    slugs.add(title_slug)
-    return slugs
+                keys |= dedup.story_keys(story, set_names)
+    return keys

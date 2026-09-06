@@ -8,16 +8,15 @@ with links to original pages (often via web.archive.org).
 
 import re
 from datetime import datetime
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
 
-WIKI_URL = "https://mtg.wiki/page/Magic_Story"
+from . import dedup
+from . import net
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+WIKI_URL = "https://mtg.wiki/page/Magic_Story"
 
 
 def fetch_wiki_story_sets() -> dict[int, list[dict]]:
@@ -30,7 +29,7 @@ def fetch_wiki_story_sets() -> dict[int, list[dict]]:
         Format matches scraper.py output for GUI compatibility.
     """
     try:
-        response = requests.get(WIKI_URL, headers=HEADERS, timeout=30)
+        response = net.get(WIKI_URL, timeout=net.DEFAULT_TIMEOUT)
         response.raise_for_status()
         html = response.text
     except requests.exceptions.RequestException as e:
@@ -559,42 +558,30 @@ def _parse_wiki_date(date_str: str) -> datetime | None:
 
 def _title_to_slug(title: str) -> str:
     """Convert a title to a URL-safe slug."""
-    slug = title.lower()
-    slug = re.sub(r'[^a-z0-9\s-]', '', slug)
-    slug = re.sub(r'[\s]+', '-', slug)
-    slug = slug.strip('-')
-    return slug
+    return dedup.title_to_slug(title)
 
 
 def get_contentful_slugs(contentful_sets: dict[int, list[dict]]) -> set[str]:
     """
-    Extract all story slugs/URLs from Contentful results for deduplication.
+    Extract all dedup keys (slugs, URL paths, scoped/specific titles) from
+    Contentful storyGroup results for wiki deduplication.
 
-    Args:
-        contentful_sets: The result of scraper.fetch_all_story_sets()
-
-    Returns:
-        Set of normalized slugs and URLs.
+    Generic titles such as "Epilogue" only produce a key scoped to the set
+    name, so a wiki story with the same generic title in a different set is
+    not mistaken for a duplicate. See dedup.story_keys().
     """
-    slugs = set()
-    for year, sets in contentful_sets.items():
+    keys: set[str] = set()
+    for sets in contentful_sets.values():
         for story_set in sets:
+            set_names = [story_set.get("name")]
             for story in story_set.get("stories", []):
-                # Add the slug
-                if story.get("slug"):
-                    slugs.add(story["slug"].lower().strip())
+                keys |= dedup.story_keys(story, set_names)
+    return keys
 
-                # Add normalized URL path
-                if story.get("url"):
-                    parsed = urlparse(story["url"])
-                    path = parsed.path.rstrip("/").lower()
-                    slugs.add(path)
 
-                # Add title-based slug
-                if story.get("title"):
-                    slugs.add(_title_to_slug(story["title"]))
-
-    return slugs
+def _wiki_story_keys(story: dict, story_set: dict) -> set[str]:
+    """Dedup keys for a wiki story: its section name and 'Set' column both scope the title."""
+    return dedup.story_keys(story, [story_set.get("name"), story.get("set_name")])
 
 
 def filter_wiki_sets(
@@ -606,7 +593,8 @@ def filter_wiki_sets(
 
     Args:
         wiki_sets: Wiki story sets from fetch_wiki_story_sets()
-        contentful_slugs: Set from get_contentful_slugs()
+        contentful_slugs: Set from get_contentful_slugs() and/or
+            scraper.get_article_slugs()
 
     Returns:
         Filtered wiki sets with duplicates removed.
@@ -618,28 +606,7 @@ def filter_wiki_sets(
         for story_set in sets:
             filtered_stories = []
             for story in story_set.get("stories", []):
-                # Check if this story already exists in Contentful
-                slug = story.get("slug", "")
-                title_slug = _title_to_slug(story.get("title", ""))
-                url_path = ""
-                if story.get("url"):
-                    # For archive.org URLs, extract the original URL path
-                    url = story["url"]
-                    if "web.archive.org" in url:
-                        # Extract original URL from archive URL
-                        match = re.search(r'web\.archive\.org/web/\d+/(.*)', url)
-                        if match:
-                            original = match.group(1)
-                            url_path = urlparse(original).path.rstrip("/").lower()
-                    else:
-                        url_path = urlparse(url).path.rstrip("/").lower()
-
-                # Check all possible matches
-                is_duplicate = (
-                    (slug and slug in contentful_slugs) or
-                    (title_slug and title_slug in contentful_slugs) or
-                    (url_path and url_path in contentful_slugs)
-                )
+                is_duplicate = bool(_wiki_story_keys(story, story_set) & contentful_slugs)
 
                 if not is_duplicate:
                     filtered_stories.append(story)
