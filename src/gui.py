@@ -65,6 +65,19 @@ class ConnectionLost(Exception):
     """Raised inside the generation thread when the internet connection is gone."""
 
 
+def _first_story_date(story_set: dict):
+    """Earliest published_date among a set's stories, or None if none are dated."""
+    dates = [s.get("published_date") for s in story_set.get("stories", []) if s.get("published_date")]
+    return min(dates) if dates else None
+
+
+def _set_sort_key(story_set: dict) -> tuple:
+    """Newest first-story date first; undated sets after all dated ones."""
+    date = _first_story_date(story_set)
+    # (0, -timestamp) sorts dated sets newest-first; (1, 0) puts undated sets last
+    return (0, -date.timestamp()) if date else (1, 0)
+
+
 class MTGStoriesApp:
     """Main application window."""
 
@@ -488,7 +501,11 @@ class MTGStoriesApp:
     ) -> dict[int, list[dict]]:
         """
         Merge all three sources into a single dict by year.
-        Order per year: storyGroups first, then articles, then wiki.
+
+        Within a year, sets are sorted by the date of their first story,
+        newest first (matching the newest-first year order in the list).
+        Sets with no dated stories go last, keeping source order
+        (storyGroups, articles, wiki) among themselves.
         """
         all_years = set(contentful_sets.keys()) | set(article_sets.keys()) | set(wiki_sets.keys())
         merged: dict[int, list[dict]] = {}
@@ -499,6 +516,8 @@ class MTGStoriesApp:
             year_sets.extend(article_sets.get(year, []))
             year_sets.extend(wiki_sets.get(year, []))
             if year_sets:
+                # sort() is stable, so undated sets keep their source order
+                year_sets.sort(key=_set_sort_key)
                 merged[year] = year_sets
 
         return merged
