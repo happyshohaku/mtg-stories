@@ -1,6 +1,6 @@
 # MTG Stories to EPUB Converter
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/happyshohaku/mtg-stories/releases)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue)](https://github.com/happyshohaku/mtg-stories/releases)
 
 A Python GUI application that scrapes Magic: The Gathering stories from the official Wizards of the Coast website and generates EPUB files for e-reader devices like Kindle.
 

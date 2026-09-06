@@ -41,7 +41,7 @@ def __init__(self, root: tk.Tk):
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  MTG Stories to EPUB v1.0.0             (Header)    │
+│  MTG Stories to EPUB v1.1.0             (Header)    │
 ├─────────────────────────────────────────────────────┤
 │  Story Sets (by Year)                               │
 │  Search: [________________________]                 │
