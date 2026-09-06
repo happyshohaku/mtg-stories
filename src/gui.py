@@ -3,12 +3,20 @@ Tkinter GUI for the MTG Stories to EPUB converter.
 """
 
 import os
+import shutil
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
-from . import scraper, parser, epub_builder, wiki_scraper
+import requests
+
+from . import scraper, parser, epub_builder, wiki_scraper, net
 from . import __version__
+
+
+class ConnectionLost(Exception):
+    """Raised inside the generation thread when the internet connection is gone."""
 
 
 class MTGStoriesApp:
@@ -25,6 +33,11 @@ class MTGStoriesApp:
         self.listbox_items: list[dict | None] = []  # None for year headers
         self.output_dir = os.path.join(os.path.expanduser("~"), "Documents", "MTG-Stories")
         self.selection_order: list[int] = []  # Track click order for multi-select
+        # Each generation run gets an id and its own cancel event. UI callbacks
+        # from a run whose id is no longer current are dropped, so Stop takes
+        # effect instantly even while the worker is blocked on the network.
+        self.generation_id = 0
+        self.cancel_event = threading.Event()
 
         # Build UI
         self._create_widgets()
@@ -427,6 +440,13 @@ class MTGStoriesApp:
         self.listbox.delete(0, tk.END)
         self.listbox_items = []
 
+        # Rebuilding the list clears the listbox selection, so the tracked
+        # click order must be cleared too — otherwise stale indices would
+        # point at different rows after the rebuild.
+        self.selection_order = []
+        self._clear_info()
+        self.generate_btn.config(text="Generate EPUB")
+
         total_sets = 0
 
         # Sort years descending (newest first)
@@ -716,147 +736,274 @@ class MTGStoriesApp:
             if not output_path:
                 return  # Cancelled
 
-        self.generate_btn.config(state="disabled")
+        # Start a new run with its own id and cancel event
+        self.generation_id += 1
+        run_id = self.generation_id
+        cancel = threading.Event()
+        self.cancel_event = cancel
+
+        self.generate_btn.config(text="Stop", command=self._cancel_generate, state="normal")
         self._set_status(f"Generating EPUB for {epub_name}...")
         self._set_progress(0)
 
         def generate():
             try:
-                result = self._do_generate(ordered_sets, epub_name, output_path)
-                self.root.after(0, lambda: self._generation_complete(result))
+                path, failures = self._do_generate(ordered_sets, epub_name, output_path, run_id, cancel)
+                self._post(run_id, lambda: self._generation_complete(path, failures))
+            except net.Cancelled:
+                self._post(run_id, self._generation_cancelled)
+            except ConnectionLost as e:
+                # Capture the text now: the "e" name is unbound once the
+                # except block ends, before the UI thread runs the lambda.
+                message = str(e)
+                self._post(run_id, lambda: self._generation_aborted(message))
             except Exception as e:
-                self.root.after(0, lambda: self._show_error(f"Generation failed: {e}"))
+                message = f"Generation failed: {e}"
+                self._post(run_id, lambda: self._show_error(message))
 
         threading.Thread(target=generate, daemon=True).start()
 
-    def _do_generate(self, story_sets: list[dict], epub_name: str, output_path: str | None = None) -> str:
-        """Perform the actual EPUB generation for one or more story sets."""
+    def _post(self, run_id: int, fn):
+        """Run fn on the UI thread, unless the run it belongs to has been abandoned."""
+        def guarded():
+            if run_id == self.generation_id:
+                fn()
+        self.root.after(0, guarded)
+
+    def _cancel_generate(self):
+        """
+        Stop immediately. The run is abandoned: its worker thread is told to
+        cancel and will exit at its next check (at worst after one socket
+        timeout), but the UI does not wait for that. Any result it produces
+        is discarded and its temp files are removed by its own finally block.
+        """
+        self.cancel_event.set()
+        self.generation_id += 1
+        self._generation_cancelled()
+
+    def _reset_generate_button(self):
+        """Restore the Generate button after generation ends for any reason."""
+        self.generate_btn.config(text="Generate EPUB", command=self._generate_epub, state="normal")
+
+    def _do_generate(
+        self,
+        story_sets: list[dict],
+        epub_name: str,
+        output_path: str | None = None,
+        run_id: int | None = None,
+        cancel: threading.Event | None = None,
+    ) -> tuple[str, list[str]]:
+        """
+        Perform the actual EPUB generation for one or more story sets.
+        Runs on a worker thread.
+
+        Returns:
+            (path to the EPUB, list of human-readable failure messages for
+            stories that could not be fetched and were left out of the book).
+
+        Raises:
+            net.Cancelled: the user pressed Stop.
+            ConnectionLost: the internet connection went away mid-run.
+        """
+        if cancel is None:
+            cancel = threading.Event()
+        status = lambda m: self._update_status(m, run_id)
+        progress = lambda v: self._update_progress(v, run_id)
+
         # Count total stories across all sets
         total_stories = sum(len(s.get("stories", [])) for s in story_sets)
         if total_stories == 0:
             raise Exception(f"No stories found for {epub_name}")
 
-        self._update_status(f"Found {total_stories} stories")
-        self._update_progress(10)
+        status(f"Found {total_stories} stories")
+        progress(10)
 
         # Fetch and parse stories, preserving set grouping
         groups: list[tuple[str, list]] = []  # (set_name, [Story, ...])
-        temp_dir = os.path.join(self.output_dir, ".temp_images")
-        os.makedirs(temp_dir, exist_ok=True)
+        failures: list[str] = []  # Stories that could not be fetched
+        temp_dir = tempfile.mkdtemp(prefix="mtg-stories-")
 
-        story_num = 0
-        for story_set in story_sets:
-            set_name = story_set.get("name", "Unknown")
-            parsed_in_group = []
+        try:
+            story_num = 0
+            for story_set in story_sets:
+                set_name = story_set.get("name", "Unknown")
+                parsed_in_group = []
 
-            for info in story_set.get("stories", []):
-                story_num += 1
-                progress = 10 + (70 * (story_num / total_stories))
-                title = info.get("title", "Unknown")[:40]
-                self._update_status(f"Fetching story {story_num}/{total_stories}: {title}...")
-                self._update_progress(progress)
+                for info in story_set.get("stories", []):
+                    net.check_cancelled(cancel)
+                    story_num += 1
+                    pct = 10 + (70 * (story_num / total_stories))
+                    title = info.get("title", "Unknown")[:40]
+                    label = f"story {story_num}/{total_stories}: {title}"
+                    status(f"Fetching {label}...")
+                    progress(pct)
 
-                try:
-                    html = scraper.fetch_story_page(info["url"])
+                    try:
+                        html = scraper.fetch_story_page(info["url"], cancel=cancel)
 
-                    story = parser.parse_story(
-                        html,
-                        info["url"],
-                        fallback_author=info.get("author"),
-                        fallback_date=info.get("published_date"),
-                        fallback_title=info.get("title"),
-                    )
+                        story = parser.parse_story(
+                            html,
+                            info["url"],
+                            fallback_author=info.get("author"),
+                            fallback_date=info.get("published_date"),
+                            fallback_title=info.get("title"),
+                        )
 
-                    if info.get("published_date"):
-                        story.publication_date = info["published_date"]
+                        if info.get("published_date"):
+                            story.publication_date = info["published_date"]
 
-                    if story.images:
-                        parser.download_images(story.images, temp_dir)
+                        if story.images:
+                            parser.download_images(
+                                story.images,
+                                temp_dir,
+                                cancel=cancel,
+                                progress=lambda done, total, label=label: status(
+                                    f"Fetching {label} (image {done + 1}/{total})..."
+                                ),
+                            )
 
-                    parsed_in_group.append(story)
-                except Exception as e:
-                    print(f"Failed to fetch story {info['url']}: {e}")
-                    continue
+                        parsed_in_group.append(story)
+                    except net.Cancelled:
+                        raise
+                    except net.Offline:
+                        # net.get() already probed and confirmed the internet is gone
+                        raise ConnectionLost(f"Lost internet connection while fetching '{title}'.")
+                    except (requests.ConnectionError, requests.Timeout) as e:
+                        # Internet is up but this site is not responding
+                        print(f"Failed to fetch story {info['url']}: {e}")
+                        failures.append(f"{info.get('title', 'Unknown')} ({set_name}): site unreachable")
+                        continue
+                    except Exception as e:
+                        print(f"Failed to fetch story {info['url']}: {e}")
+                        failures.append(f"{info.get('title', 'Unknown')} ({set_name}): {e}")
+                        continue
 
-            if parsed_in_group:
-                groups.append((set_name, parsed_in_group))
+                if parsed_in_group:
+                    groups.append((set_name, parsed_in_group))
 
-        all_stories = [story for _, stories in groups for story in stories]
-        if not all_stories:
-            raise Exception("Failed to fetch any stories")
+            net.check_cancelled(cancel)
 
-        self._update_progress(85)
+            all_stories = [story for _, stories in groups for story in stories]
+            if not all_stories:
+                detail = "\n".join(failures[:5])
+                raise Exception(f"Failed to fetch any stories.\n\n{detail}")
 
-        # Find cover image — use first set with an image_url
-        cover_path = None
-        for story_set in story_sets:
-            if story_set.get("image_url"):
-                self._update_status("Downloading cover image...")
-                cover_path = parser.download_image(story_set["image_url"], temp_dir)
-                if cover_path:
-                    break
+            progress(85)
 
-        if not cover_path:
-            for story in all_stories:
-                for img in story.images:
-                    if img.get("local_path"):
-                        cover_path = img["local_path"]
+            # Find cover image — use first set with an image_url
+            cover_path = None
+            for story_set in story_sets:
+                if story_set.get("image_url"):
+                    status("Downloading cover image...")
+                    cover_path = parser.download_image(story_set["image_url"], temp_dir, cancel)
+                    if cover_path:
                         break
-                if cover_path:
-                    break
 
-        # Generate EPUB
-        self._update_status("Building EPUB...")
-        self._update_progress(90)
+            if not cover_path:
+                for story in all_stories:
+                    for img in story.images:
+                        if img.get("local_path"):
+                            cover_path = img["local_path"]
+                            break
+                    if cover_path:
+                        break
 
-        # Use grouped TOC for multi-set, flat for single-set
-        use_groups = groups if len(story_sets) > 1 else None
+            net.check_cancelled(cancel)
 
-        final_path = epub_builder.create_epub(
-            stories=all_stories,
-            set_name=epub_name,
-            output_dir=self.output_dir,
-            cover_image_path=cover_path,
-            groups=use_groups,
-            output_path=output_path,
+            # Generate EPUB
+            status("Building EPUB...")
+            progress(90)
+
+            # Use grouped TOC for multi-set, flat for single-set
+            use_groups = groups if len(story_sets) > 1 else None
+
+            final_path = epub_builder.create_epub(
+                stories=all_stories,
+                set_name=epub_name,
+                output_dir=self.output_dir,
+                cover_image_path=cover_path,
+                groups=use_groups,
+                output_path=output_path,
+            )
+
+            # Stop pressed while the file was being written: honour it
+            if cancel.is_set():
+                try:
+                    os.remove(final_path)
+                except OSError:
+                    pass
+                raise net.Cancelled()
+        finally:
+            # Always remove downloaded images, whether we finished, failed or stopped
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        progress(100)
+        return final_path, failures
+
+    def _update_status(self, message: str, run_id: int | None = None):
+        """Thread-safe status update; dropped if run_id is no longer current."""
+        if run_id is None:
+            self.root.after(0, lambda: self._set_status(message))
+        else:
+            self._post(run_id, lambda: self._set_status(message))
+
+    def _update_progress(self, value: float, run_id: int | None = None):
+        """Thread-safe progress update; dropped if run_id is no longer current."""
+        if run_id is None:
+            self.root.after(0, lambda: self._set_progress(value))
+        else:
+            self._post(run_id, lambda: self._set_progress(value))
+
+    def _generation_cancelled(self):
+        """Handle the user stopping generation before a file was written."""
+        self._reset_generate_button()
+        self._set_status("Generation stopped. No EPUB was written.")
+        self._set_progress(0)
+
+    def _generation_aborted(self, message: str):
+        """Handle generation stopping on its own because the internet went away."""
+        self._reset_generate_button()
+        self._set_status("Stopped: lost internet connection. No EPUB was written.")
+        self._set_progress(0)
+        messagebox.showwarning(
+            "Lost internet connection",
+            f"{message}\n\nGeneration stopped and no EPUB was written. "
+            "Check your connection and try again.",
         )
 
-        # Clean up temp images folder
-        import shutil
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+    def _generation_complete(self, output_path: str, failures: list[str] | None = None):
+        """Handle EPUB generation that produced a file, possibly with missing stories."""
+        self._reset_generate_button()
+        failures = failures or []
 
-        self._update_progress(100)
-        return final_path
+        if failures:
+            self._set_status(
+                f"EPUB saved with {len(failures)} missing stor{'y' if len(failures) == 1 else 'ies'}: "
+                f"{os.path.basename(output_path)}"
+            )
+            shown = "\n".join(f"  \u2022 {f}" for f in failures[:10])
+            if len(failures) > 10:
+                shown += f"\n  \u2026 and {len(failures) - 10} more"
+            message = (
+                f"EPUB created, but {len(failures)} of the stories could not be fetched "
+                f"and are NOT in the book:\n\n{shown}\n\n{output_path}\n\nOpen output folder?"
+            )
+            title, icon = "Completed with missing stories", "warning"
+        else:
+            self._set_status(f"EPUB saved: {os.path.basename(output_path)}")
+            message = f"EPUB created successfully!\n\n{output_path}\n\nOpen output folder?"
+            title, icon = "Success", "info"
 
-    def _update_status(self, message: str):
-        """Thread-safe status update."""
-        self.root.after(0, lambda: self._set_status(message))
-
-    def _update_progress(self, value: float):
-        """Thread-safe progress update."""
-        self.root.after(0, lambda: self._set_progress(value))
-
-    def _generation_complete(self, output_path: str):
-        """Handle successful EPUB generation."""
-        self.generate_btn.config(state="normal")
-        self._set_status(f"EPUB saved: {os.path.basename(output_path)}")
-
-        result = messagebox.askquestion(
-            "Success",
-            f"EPUB created successfully!\n\n{output_path}\n\nOpen output folder?",
-            icon="info"
-        )
+        result = messagebox.askquestion(title, message, icon=icon)
         if result == "yes":
             os.startfile(os.path.dirname(output_path))
 
     def _show_error(self, message: str):
         """Show an error message."""
-        self.generate_btn.config(state="normal")
+        self._reset_generate_button()
         self._set_status("Error")
         self._set_progress(0)
         messagebox.showerror("Error", message)
-
 
 def run():
     """Run the application."""
