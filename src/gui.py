@@ -2,11 +2,13 @@
 Tkinter GUI for the MTG Stories to EPUB converter.
 """
 
+import atexit
 import logging
 import os
 import shutil
 import tempfile
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -15,6 +17,45 @@ import requests
 from . import scraper, parser, epub_builder, wiki_scraper, net
 from . import __version__
 from .log import setup_logging
+
+# Temp folders of generation runs in progress. Normally each run removes its
+# own folder in a finally block, but if the window is closed mid-run the
+# daemon worker is killed before that happens. cleanup_temp_dirs() runs on
+# window close and at interpreter exit so nothing is left on disk.
+_active_temp_dirs: set[str] = set()
+_temp_dirs_lock = threading.Lock()
+
+
+def _register_temp_dir(path: str) -> None:
+    with _temp_dirs_lock:
+        _active_temp_dirs.add(path)
+
+
+def _release_temp_dir(path: str) -> None:
+    with _temp_dirs_lock:
+        _active_temp_dirs.discard(path)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def cleanup_temp_dirs(wait_seconds: float = 2.0) -> None:
+    """
+    Remove any temp folders still registered. A worker may still be writing
+    a file for a moment after the window closes, so retry briefly if a
+    folder does not go away on the first attempt.
+    """
+    with _temp_dirs_lock:
+        dirs = list(_active_temp_dirs)
+        _active_temp_dirs.clear()
+    deadline = time.monotonic() + wait_seconds
+    for path in dirs:
+        while True:
+            shutil.rmtree(path, ignore_errors=True)
+            if not os.path.exists(path) or time.monotonic() > deadline:
+                break
+            time.sleep(0.1)
+
+
+atexit.register(cleanup_temp_dirs)
 
 log = logging.getLogger(__name__)
 
@@ -851,6 +892,7 @@ class MTGStoriesApp:
         groups: list[tuple[str, list]] = []  # (set_name, [Story, ...])
         failures: list[str] = []  # Stories that could not be fetched
         temp_dir = tempfile.mkdtemp(prefix="mtg-stories-")
+        _register_temp_dir(temp_dir)
 
         try:
             story_num = 0
@@ -964,7 +1006,7 @@ class MTGStoriesApp:
                 raise net.Cancelled()
         finally:
             # Always remove downloaded images, whether we finished, failed or stopped
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            _release_temp_dir(temp_dir)
 
         log.info("Wrote %s (%d missing stories)", final_path, len(failures))
         progress(100)
@@ -1043,4 +1085,15 @@ def run():
 
     root = tk.Tk()
     app = MTGStoriesApp(root)
-    root.mainloop()
+
+    def on_close():
+        # Tell any running generation to stop, then close. Its temp folder
+        # is removed below (and again at exit) even if it was mid-download.
+        app.cancel_event.set()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    try:
+        root.mainloop()
+    finally:
+        cleanup_temp_dirs()
