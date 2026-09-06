@@ -1083,12 +1083,33 @@ class MTGStoriesApp:
         self._set_progress(0)
         messagebox.showerror("Error", message)
 
+def _icon_path() -> str | None:
+    """
+    Locate assets/icon.ico both from a source checkout (repo root) and from a
+    PyInstaller one-file build (unpacked next to sys._MEIPASS).
+    """
+    import sys
+    bases = [getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
+    for base in bases:
+        if base:
+            candidate = os.path.join(base, "assets", "icon.ico")
+            if os.path.exists(candidate):
+                return candidate
+    return None
+
+
 def run():
     """Run the application."""
     setup_logging()
     log.info("MTG Stories to EPUB v%s starting", __version__)
 
     root = tk.Tk()
+    icon = _icon_path()
+    if icon:
+        try:
+            root.iconbitmap(icon)
+        except tk.TclError:
+            pass  # icon is cosmetic; never block startup on it
     app = MTGStoriesApp(root)
 
     def on_close():

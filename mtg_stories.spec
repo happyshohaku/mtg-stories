@@ -4,7 +4,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('assets/icon.ico', 'assets')],
     hiddenimports=['lxml', 'lxml.etree'],
     hookspath=[],
     hooksconfig={},
@@ -30,4 +30,5 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
+    icon='assets/icon.ico',
 )
