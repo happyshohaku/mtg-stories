@@ -5,16 +5,16 @@ HTML parsing module for extracting story content and metadata.
 import re
 import os
 import hashlib
+import threading
+from typing import Callable
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from dataclasses import dataclass, field
 
 import requests
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+from . import net
 
 
 @dataclass
@@ -415,35 +415,39 @@ def _url_to_filename(url: str) -> str:
     return f"{url_hash}_{safe_name}"
 
 
-def download_image(url: str, output_dir: str) -> str | None:
+def _fetch_image(url: str, output_dir: str, cancel: "threading.Event | None" = None) -> str:
+    """Download one image to output_dir. Raises requests exceptions (or net.Cancelled) on failure."""
+    # Add Referer header to avoid CDN blocking
+    headers = {"Referer": "https://magic.wizards.com/"}
+    response = net.get(
+        url, headers=headers, retries=net.IMAGE_RETRIES, timeout=net.IMAGE_TIMEOUT, cancel=cancel
+    )
+    response.raise_for_status()
+
+    filename = _url_to_filename(url)
+    filepath = os.path.join(output_dir, filename)
+    os.makedirs(output_dir, exist_ok=True)
+    with open(filepath, "wb") as f:
+        f.write(response.content)
+    return filepath
+
+
+def download_image(url: str, output_dir: str, cancel: "threading.Event | None" = None) -> str | None:
     """
     Download an image and save it to the output directory.
 
     Args:
         url: The URL of the image.
         output_dir: Directory to save the image.
+        cancel: Optional event; net.Cancelled propagates when set.
 
     Returns:
         The local file path, or None if download failed.
     """
     try:
-        # Add Referer header to avoid CDN blocking
-        headers = {
-            "User-Agent": HEADERS["User-Agent"],
-            "Referer": "https://magic.wizards.com/"
-        }
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-
-        filename = _url_to_filename(url)
-        filepath = os.path.join(output_dir, filename)
-
-        os.makedirs(output_dir, exist_ok=True)
-
-        with open(filepath, "wb") as f:
-            f.write(response.content)
-
-        return filepath
+        return _fetch_image(url, output_dir, cancel)
+    except net.Cancelled:
+        raise
     except requests.exceptions.RequestException as e:
         print(f"Failed to download image {url}: {e}")
         return None
@@ -452,19 +456,62 @@ def download_image(url: str, output_dir: str) -> str | None:
         return None
 
 
-def download_images(images: list[dict], output_dir: str) -> list[dict]:
+# After this many consecutive connection failures to one host, the remaining
+# images on that host are skipped for the current story. Catches "offline"
+# and "dead image host" without stalling on every image in turn.
+_HOST_FAILURE_LIMIT = 2
+
+
+def download_images(
+    images: list[dict],
+    output_dir: str,
+    cancel: "threading.Event | None" = None,
+    progress: "Callable[[int, int], None] | None" = None,
+) -> list[dict]:
     """
     Download all images and update their local paths.
 
     Args:
         images: List of image dicts with 'url' and 'filename' keys.
         output_dir: Directory to save images.
+        cancel: Optional event; when set, net.Cancelled is raised promptly
+            (also interrupting an in-progress retry wait).
+        progress: Optional callback(done, total) invoked before each download.
 
     Returns:
-        Updated list of image dicts with 'local_path' populated.
+        Updated list of image dicts with 'local_path' populated (None on
+        failure) and 'error' set to None, "connection" or "http".
     """
-    for img in images:
-        local_path = download_image(img["url"], output_dir)
-        img["local_path"] = local_path
+    consecutive_failures: dict[str, int] = {}
+    total = len(images)
+
+    for i, img in enumerate(images):
+        img["local_path"] = None
+        img["error"] = None  # None, "connection" (host unreachable) or "http" (bad response etc.)
+        net.check_cancelled(cancel)
+
+        host = urlparse(img["url"]).netloc.lower()
+        if consecutive_failures.get(host, 0) >= _HOST_FAILURE_LIMIT:
+            print(f"Skipping image on unreachable host {host}: {img['url']}")
+            img["error"] = "connection"
+            continue
+
+        if progress:
+            progress(i, total)
+
+        try:
+            img["local_path"] = _fetch_image(img["url"], output_dir, cancel)
+            consecutive_failures[host] = 0
+        except (net.Cancelled, net.Offline):
+            raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout) as e:
+            # DNS failure, refused, connect timeout: the host itself is unreachable
+            consecutive_failures[host] = consecutive_failures.get(host, 0) + 1
+            img["error"] = "connection"
+            print(f"Failed to download image {img['url']}: {e}")
+        except Exception as e:
+            # HTTP 404, read timeout, disk error: specific to this image
+            img["error"] = "http"
+            print(f"Failed to download image {img['url']}: {e}")
 
     return images

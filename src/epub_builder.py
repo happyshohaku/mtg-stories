@@ -518,19 +518,21 @@ def _process_content(html: str, image_mapping: dict[str, str] | None = None) -> 
             new_div.string = "* * *"
             text.replace_with(new_div)
 
-    # Ensure all img tags are properly closed and have alt text
-    # Also update image src to use converted filenames
+    # Ensure all img tags have alt text and point at files that are actually
+    # in the book. Images whose download failed are removed rather than left
+    # as broken references, which e-readers render as error boxes.
     for img in soup.find_all("img"):
         if not img.get("alt"):
             img["alt"] = "Story illustration"
 
-        # Update image src if we have a mapping (webp -> jpg conversion)
-        if image_mapping and img.get("src"):
-            src = img["src"]
-            if src.startswith("images/"):
-                original_filename = src[7:]  # Remove "images/" prefix
-                if original_filename in image_mapping:
-                    img["src"] = f"images/{image_mapping[original_filename]}"
+        src = img.get("src", "")
+        if image_mapping is not None and src.startswith("images/"):
+            original_filename = src[7:]  # Remove "images/" prefix
+            if original_filename in image_mapping:
+                # Use converted filename (webp/png -> jpg)
+                img["src"] = f"images/{image_mapping[original_filename]}"
+            else:
+                img.decompose()
 
     # Remove any remaining script or style tags
     for tag in soup.find_all(["script", "style"]):
