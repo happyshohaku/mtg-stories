@@ -104,7 +104,7 @@ mtg-stories/
 │   ├── net.py            # HTTP session, cancellable retries, offline detection
 │   ├── dedup.py          # Cross-source dedup keys
 │   ├── dates.py          # Shared date parsing
-│   └── log.py            # File logging (%LOCALAPPDATA%\MTG-Stories\mtg-stories.log)
+│   └── log.py            # Logging setup (stderr only, no files written)
 ├── docs/                 # Documentation SOPs
 ├── run.py                # PyInstaller entry point
 ├── mtg_stories.spec      # PyInstaller build config

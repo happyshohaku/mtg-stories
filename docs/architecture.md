@@ -171,8 +171,8 @@ Show success message
 - `parse_date()` for every date format the sources use; always returns naive datetimes so sorting never mixes aware and naive values
 
 ### log.py
-- `setup_logging()` sends all modules' logging to a rotating file (`%LOCALAPPDATA%\MTG-Stories\mtg-stories.log`, or `~/.mtg-stories/`) plus stderr when one exists
-- The packaged .exe has no console, so this is where fetch and image failures can be found
+- `setup_logging()` sends all modules' logging to stderr when running from a terminal; nothing is written to disk so the app leaves no files behind
+- The packaged .exe has no console; failure reasons the user needs are shown in the completion dialog instead
 
 ### epub_builder.py
 - EPUB file structure creation

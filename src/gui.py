@@ -14,7 +14,6 @@ import requests
 
 from . import scraper, parser, epub_builder, wiki_scraper, net
 from . import __version__
-from . import log as applog
 from .log import setup_logging
 
 log = logging.getLogger(__name__)
@@ -1015,10 +1014,9 @@ class MTGStoriesApp:
             shown = "\n".join(f"  \u2022 {f}" for f in failures[:10])
             if len(failures) > 10:
                 shown += f"\n  \u2026 and {len(failures) - 10} more"
-            log_hint = f"\nDetails: {applog.LOG_PATH}" if applog.LOG_PATH else ""
             message = (
                 f"EPUB created, but {len(failures)} of the stories could not be fetched "
-                f"and are NOT in the book:\n\n{shown}{log_hint}\n\n{output_path}\n\nOpen output folder?"
+                f"and are NOT in the book:\n\n{shown}\n\n{output_path}\n\nOpen output folder?"
             )
             title, icon = "Completed with missing stories", "warning"
         else:
