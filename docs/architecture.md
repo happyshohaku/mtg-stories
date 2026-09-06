@@ -132,6 +132,7 @@ Show success message
 - Reorder dialog with drag-and-drop and date sorting for combined EPUBs
 - 3-source fetch, enrichment, dedup, and merge orchestration
 - Generation runs with a per-run id and cancel event: Stop resets the UI immediately and abandons the worker; lost internet aborts the run; stories that fail are listed in the completion dialog
+- Images are downloaded to a `.mtg-stories-working-*` folder inside the chosen output directory and that folder is deleted when the run ends (also on window close). The app never writes outside the output directory
 - File-exists detection with save-as dialog
 - User interaction handling
 - Threading for background operations
@@ -223,7 +224,7 @@ Errors are handled at each layer:
 ```
 ~/Documents/MTG-Stories/
 ├── Set Name.epub          # Generated EPUB
-└── .temp_images/          # Temporary (deleted after generation)
+└── .mtg-stories-working-*/ # Image download folder for a run in progress (deleted when the run ends)
     ├── abc123_image1.jpg
     └── def456_image2.jpg
 ```

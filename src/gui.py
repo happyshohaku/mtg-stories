@@ -18,10 +18,11 @@ from . import scraper, parser, epub_builder, wiki_scraper, net
 from . import __version__
 from .log import setup_logging
 
-# Temp folders of generation runs in progress. Normally each run removes its
-# own folder in a finally block, but if the window is closed mid-run the
-# daemon worker is killed before that happens. cleanup_temp_dirs() runs on
-# window close and at interpreter exit so nothing is left on disk.
+# Working folders of generation runs in progress (created inside the output
+# directory). Normally each run removes its own folder in a finally block,
+# but if the window is closed mid-run the daemon worker is killed before
+# that happens. cleanup_temp_dirs() runs on window close and at interpreter
+# exit so nothing is left on disk.
 _active_temp_dirs: set[str] = set()
 _temp_dirs_lock = threading.Lock()
 
@@ -891,7 +892,11 @@ class MTGStoriesApp:
         # Fetch and parse stories, preserving set grouping
         groups: list[tuple[str, list]] = []  # (set_name, [Story, ...])
         failures: list[str] = []  # Stories that could not be fetched
-        temp_dir = tempfile.mkdtemp(prefix="mtg-stories-")
+        # Working folder for downloaded images lives inside the user's chosen
+        # output directory (never the system temp dir) and is removed when
+        # the run ends.
+        os.makedirs(self.output_dir, exist_ok=True)
+        temp_dir = tempfile.mkdtemp(prefix=".mtg-stories-working-", dir=self.output_dir)
         _register_temp_dir(temp_dir)
 
         try:
