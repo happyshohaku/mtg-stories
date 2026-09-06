@@ -2,17 +2,22 @@
 Tkinter GUI for the MTG Stories to EPUB converter.
 """
 
+import logging
 import os
 import shutil
 import tempfile
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, messagebox
 
 import requests
 
 from . import scraper, parser, epub_builder, wiki_scraper, net
 from . import __version__
+from . import log as applog
+from .log import setup_logging
+
+log = logging.getLogger(__name__)
 
 
 class ConnectionLost(Exception):
@@ -38,6 +43,7 @@ class MTGStoriesApp:
         # effect instantly even while the worker is blocked on the network.
         self.generation_id = 0
         self.cancel_event = threading.Event()
+        self.loading = False  # True while the 3-source fetch is running
 
         # Build UI
         self._create_widgets()
@@ -316,99 +322,122 @@ class MTGStoriesApp:
         """Fetch story sets from Contentful storyGroups, articles, and mtg.wiki."""
         self._set_status("Fetching story sets...")
         self.generate_btn.config(state="disabled")
+        self.loading = True
         self.progress_var.set(0)
         self.progress_bar.config(mode="indeterminate")
         self.progress_bar.start(50)
 
         def fetch():
             try:
-                contentful_sets = {}
-                article_sets = {}
-                wiki_sets = {}
-
-                # Fetch from Contentful API — storyGroups (official curated sets)
-                try:
-                    self.root.after(0, lambda: self._set_status("Fetching story groups..."))
-                    contentful_sets = scraper.fetch_all_story_sets()
-                except Exception as e:
-                    print(f"Failed to fetch Contentful story sets: {e}")
-
-                # Show storyGroups immediately
-                merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
-                self.root.after(0, lambda m=merged: self._update_sets_list(m))
-
-                # Fetch from Contentful API — individual articles
-                try:
-                    self.root.after(0, lambda: self._set_status("Fetching article archive..."))
-                    raw_article_sets = scraper.fetch_article_story_sets()
-
-                    # Build slug->metadata lookup from raw articles (before dedup)
-                    # to enrich storyGroup stories with excerpts and authors
-                    article_metadata = {}
-                    for year_sets in raw_article_sets.values():
-                        for story_set in year_sets:
-                            for story in story_set.get("stories", []):
-                                slug = story.get("slug", "").lower().strip()
-                                if slug:
-                                    article_metadata[slug] = {
-                                        "author": story.get("author"),
-                                        "excerpt": story.get("excerpt"),
-                                    }
-
-                    # Enrich storyGroup stories with article metadata
-                    for year_sets in contentful_sets.values():
-                        for story_set in year_sets:
-                            for story in story_set.get("stories", []):
-                                slug = story.get("slug", "").lower().strip()
-                                if slug and slug in article_metadata:
-                                    meta = article_metadata[slug]
-                                    if meta.get("author") and not story.get("author"):
-                                        story["author"] = meta["author"]
-                                    if meta.get("excerpt") and not story.get("excerpt"):
-                                        story["excerpt"] = meta["excerpt"]
-
-                    # Deduplicate: remove articles already in storyGroups
-                    if contentful_sets:
-                        sg_slugs = scraper.get_storygroup_slugs(contentful_sets)
-                        article_sets = scraper.filter_article_sets(raw_article_sets, sg_slugs)
-                    else:
-                        article_sets = raw_article_sets
-                except Exception as e:
-                    print(f"Failed to fetch article story sets: {e}")
-
-                # Show storyGroups + articles
-                merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
-                self.root.after(0, lambda m=merged: self._update_sets_list(m))
-
-                # Fetch from mtg.wiki
-                try:
-                    self.root.after(0, lambda: self._set_status("Fetching archive stories from mtg.wiki..."))
-                    raw_wiki_sets = wiki_scraper.fetch_wiki_story_sets()
-
-                    # Deduplicate: remove wiki stories already in storyGroups or articles
-                    known_slugs = set()
-                    if contentful_sets:
-                        known_slugs |= wiki_scraper.get_contentful_slugs(contentful_sets)
-                    if article_sets:
-                        known_slugs |= scraper.get_article_slugs(article_sets)
-                    if known_slugs:
-                        wiki_sets = wiki_scraper.filter_wiki_sets(raw_wiki_sets, known_slugs)
-                    else:
-                        wiki_sets = raw_wiki_sets
-                except Exception as e:
-                    print(f"Failed to fetch wiki story sets: {e}")
-
-                # Merge all three sources
-                merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
-                self.root.after(0, lambda: self._update_sets_list(merged))
+                self._fetch_sources()
+            except Exception as e:
+                # Should not happen (each source has its own guard), but if it
+                # does the UI must not stay stuck on "Fetching..."
+                log.exception("Story set fetch failed")
+                message = f"Failed to load story sets: {e}"
+                self.root.after(0, lambda: self._show_error(message))
             finally:
                 def _stop_progress():
                     self.progress_bar.stop()
                     self.progress_bar.config(mode="determinate")
                     self.progress_var.set(0)
+                    self.loading = False
                 self.root.after(0, _stop_progress)
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _fetch_sources(self) -> None:
+        """
+        Worker-thread body of _refresh_sets. Fetches the three sources in
+        priority order and pushes a merged list to the UI after each one so
+        results appear progressively. Each source has its own error guard;
+        a failed source is logged and skipped.
+        """
+        contentful_sets: dict[int, list[dict]] = {}
+        article_sets: dict[int, list[dict]] = {}
+        wiki_sets: dict[int, list[dict]] = {}
+
+        # Fetch from Contentful API — storyGroups (official curated sets)
+        try:
+            self.root.after(0, lambda: self._set_status("Fetching story groups..."))
+            contentful_sets = scraper.fetch_all_story_sets()
+        except Exception as e:
+            log.warning("Failed to fetch Contentful story sets: %s", e)
+
+        log.info("Fetched %d story groups", sum(len(v) for v in contentful_sets.values()))
+
+        # Show storyGroups immediately
+        merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
+        self.root.after(0, lambda m=merged: self._update_sets_list(m))
+
+        # Fetch from Contentful API — individual articles
+        try:
+            self.root.after(0, lambda: self._set_status("Fetching article archive..."))
+            raw_article_sets = scraper.fetch_article_story_sets()
+
+            # Build slug->metadata lookup from raw articles (before dedup)
+            # to enrich storyGroup stories with excerpts and authors
+            article_metadata = {}
+            for year_sets in raw_article_sets.values():
+                for story_set in year_sets:
+                    for story in story_set.get("stories", []):
+                        slug = story.get("slug", "").lower().strip()
+                        if slug:
+                            article_metadata[slug] = {
+                                "author": story.get("author"),
+                                "excerpt": story.get("excerpt"),
+                            }
+
+            # Enrich storyGroup stories with article metadata
+            for year_sets in contentful_sets.values():
+                for story_set in year_sets:
+                    for story in story_set.get("stories", []):
+                        slug = story.get("slug", "").lower().strip()
+                        if slug and slug in article_metadata:
+                            meta = article_metadata[slug]
+                            if meta.get("author") and not story.get("author"):
+                                story["author"] = meta["author"]
+                            if meta.get("excerpt") and not story.get("excerpt"):
+                                story["excerpt"] = meta["excerpt"]
+
+            # Deduplicate: remove articles already in storyGroups
+            if contentful_sets:
+                sg_slugs = scraper.get_storygroup_slugs(contentful_sets)
+                article_sets = scraper.filter_article_sets(raw_article_sets, sg_slugs)
+            else:
+                article_sets = raw_article_sets
+        except Exception as e:
+            log.warning("Failed to fetch article story sets: %s", e)
+
+        log.info("Fetched %d article sets after dedup", sum(len(v) for v in article_sets.values()))
+
+        # Show storyGroups + articles
+        merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
+        self.root.after(0, lambda m=merged: self._update_sets_list(m))
+
+        # Fetch from mtg.wiki
+        try:
+            self.root.after(0, lambda: self._set_status("Fetching archive stories from mtg.wiki..."))
+            raw_wiki_sets = wiki_scraper.fetch_wiki_story_sets()
+
+            # Deduplicate: remove wiki stories already in storyGroups or articles
+            known_slugs = set()
+            if contentful_sets:
+                known_slugs |= wiki_scraper.get_contentful_slugs(contentful_sets)
+            if article_sets:
+                known_slugs |= scraper.get_article_slugs(article_sets)
+            if known_slugs:
+                wiki_sets = wiki_scraper.filter_wiki_sets(raw_wiki_sets, known_slugs)
+            else:
+                wiki_sets = raw_wiki_sets
+        except Exception as e:
+            log.warning("Failed to fetch wiki story sets: %s", e)
+
+        log.info("Fetched %d wiki sets after dedup", sum(len(v) for v in wiki_sets.values()))
+
+        # Merge all three sources
+        merged = self._merge_story_sets(contentful_sets, article_sets, wiki_sets)
+        self.root.after(0, lambda m=merged: self._update_sets_list(m))
 
     def _merge_story_sets(
         self,
@@ -527,8 +556,8 @@ class MTGStoriesApp:
             parts.append(f"{article_count} from articles")
         if wiki_count > 0:
             parts.append(f"{wiki_count} from archive")
-        self._set_status(f"Found {total_sets} story sets ({', '.join(parts)})")
-        self._set_progress(0)
+        verb = "Showing" if preserve_search else "Found"
+        self._set_status(f"{verb} {total_sets} story sets ({', '.join(parts)})")
 
     def _browse_output(self):
         """Open a folder browser for output directory."""
@@ -815,6 +844,7 @@ class MTGStoriesApp:
         if total_stories == 0:
             raise Exception(f"No stories found for {epub_name}")
 
+        log.info("Generating '%s': %d stories from %d set(s)", epub_name, total_stories, len(story_sets))
         status(f"Found {total_stories} stories")
         progress(10)
 
@@ -870,11 +900,11 @@ class MTGStoriesApp:
                         raise ConnectionLost(f"Lost internet connection while fetching '{title}'.")
                     except (requests.ConnectionError, requests.Timeout) as e:
                         # Internet is up but this site is not responding
-                        print(f"Failed to fetch story {info['url']}: {e}")
+                        log.warning("Site unreachable for %s: %s", info["url"], e)
                         failures.append(f"{info.get('title', 'Unknown')} ({set_name}): site unreachable")
                         continue
                     except Exception as e:
-                        print(f"Failed to fetch story {info['url']}: {e}")
+                        log.warning("Failed to fetch story %s: %s", info["url"], e)
                         failures.append(f"{info.get('title', 'Unknown')} ({set_name}): {e}")
                         continue
 
@@ -937,6 +967,7 @@ class MTGStoriesApp:
             # Always remove downloaded images, whether we finished, failed or stopped
             shutil.rmtree(temp_dir, ignore_errors=True)
 
+        log.info("Wrote %s (%d missing stories)", final_path, len(failures))
         progress(100)
         return final_path, failures
 
@@ -984,9 +1015,10 @@ class MTGStoriesApp:
             shown = "\n".join(f"  \u2022 {f}" for f in failures[:10])
             if len(failures) > 10:
                 shown += f"\n  \u2026 and {len(failures) - 10} more"
+            log_hint = f"\nDetails: {applog.LOG_PATH}" if applog.LOG_PATH else ""
             message = (
                 f"EPUB created, but {len(failures)} of the stories could not be fetched "
-                f"and are NOT in the book:\n\n{shown}\n\n{output_path}\n\nOpen output folder?"
+                f"and are NOT in the book:\n\n{shown}{log_hint}\n\n{output_path}\n\nOpen output folder?"
             )
             title, icon = "Completed with missing stories", "warning"
         else:
@@ -1000,6 +1032,7 @@ class MTGStoriesApp:
 
     def _show_error(self, message: str):
         """Show an error message."""
+        log.error(message)
         self._reset_generate_button()
         self._set_status("Error")
         self._set_progress(0)
@@ -1007,14 +1040,9 @@ class MTGStoriesApp:
 
 def run():
     """Run the application."""
+    setup_logging()
+    log.info("MTG Stories to EPUB v%s starting", __version__)
+
     root = tk.Tk()
-
-    # Try to set a modern theme
-    try:
-        root.tk.call("source", "azure.tcl")
-        root.tk.call("set_theme", "light")
-    except Exception:
-        pass  # Fall back to default theme
-
     app = MTGStoriesApp(root)
     root.mainloop()

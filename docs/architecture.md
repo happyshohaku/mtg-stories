@@ -131,6 +131,7 @@ Show success message
 - Details panel showing story info (single) or combined summary (multi)
 - Reorder dialog with drag-and-drop and date sorting for combined EPUBs
 - 3-source fetch, enrichment, dedup, and merge orchestration
+- Generation runs with a per-run id and cancel event: Stop resets the UI immediately and abandons the worker; lost internet aborts the run; stories that fail are listed in the completion dialog
 - File-exists detection with save-as dialog
 - User interaction handling
 - Threading for background operations
@@ -153,8 +154,25 @@ Show success message
 ### parser.py
 - HTML content extraction
 - Author name detection (multiple methods)
-- Publication date parsing
-- Image URL collection and downloading
+- Publication date extraction
+- Image URL collection and downloading (per-host skip after repeated connection failures, records why each image failed)
+
+### net.py
+- Single entry point for all HTTP: `net.get()` on one pooled `requests.Session`
+- Retries with exponential backoff on 429/5xx/connection errors, implemented in-process so the waits can be cancelled via a `threading.Event`
+- `(connect, read)` timeouts: 5s connect everywhere, longer reads for archive.org
+- On the first connection failure, probes a known-good host and raises `net.Offline` immediately when the internet is gone (generation aborts with a "Lost internet connection" dialog)
+
+### dedup.py
+- Dedup keys shared by the scrapers: URL slug, URL path (archive.org URLs unwrapped), set-scoped title, and bare title only for titles specific enough to stand alone
+- Generic titles ("Prologue", "Chapter 3") only match within the same set, so wiki stories with common titles are not dropped
+
+### dates.py
+- `parse_date()` for every date format the sources use; always returns naive datetimes so sorting never mixes aware and naive values
+
+### log.py
+- `setup_logging()` sends all modules' logging to a rotating file (`%LOCALAPPDATA%\MTG-Stories\mtg-stories.log`, or `~/.mtg-stories/`) plus stderr when one exists
+- The packaged .exe has no console, so this is where fetch and image failures can be found
 
 ### epub_builder.py
 - EPUB file structure creation

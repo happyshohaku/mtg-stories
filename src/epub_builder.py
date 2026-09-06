@@ -2,6 +2,7 @@
 EPUB generation module for creating ebook files from parsed stories.
 """
 
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -10,6 +11,8 @@ from ebooklib import epub
 from PIL import Image, ImageDraw, ImageFont
 
 from .parser import Story
+
+log = logging.getLogger(__name__)
 
 
 # CSS for styling preservation
@@ -136,41 +139,32 @@ pre, code {
 
 pre {
     padding: 1em;
-    overflow-x: auto;
+    font-size: 0.8em;
     white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 
 table {
-    width: 100% !important;
-    max-width: 100% !important;
+    width: 100%;
+    max-width: 100%;
     border-collapse: collapse;
     margin: 1em 0;
     font-size: 0.85em;
     table-layout: fixed;
-    background: #1a1a1a !important;
-    color: #fff;
 }
 
 th, td {
-    border: 1px solid #444;
+    border: 1px solid #999;
     padding: 0.4em;
     text-align: left;
+    vertical-align: top;
     word-wrap: break-word;
     overflow-wrap: break-word;
 }
 
 th {
-    background: #333;
     font-weight: bold;
-}
-
-pre {
-    background: #1a1a1a !important;
-    color: #fff;
-    font-size: 0.8em;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    overflow-wrap: break-word;
 }
 """
 
@@ -201,7 +195,9 @@ def create_epub(
     book = epub.EpubBook()
 
     # Set metadata
-    book.set_identifier(f"mtg-stories-{uuid.uuid4().hex[:8]}")
+    # Deterministic identifier: regenerating the same title yields the same
+    # book, so e-readers keep reading position and do not show duplicates.
+    book.set_identifier(f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, 'mtg-stories:' + set_name.strip().lower())}")
     book.set_title(set_name)
     book.set_language("en")
 
@@ -251,7 +247,7 @@ def create_epub(
             book.add_item(img_item)
             image_items[filename] = new_filename  # Map original filename to new filename
         except Exception as e:
-            print(f"Failed to add image {filename}: {e}")
+            log.warning("Failed to add image %s: %s", filename, e)
 
     # Create chapters (pass image mapping for filename updates)
     chapters = []
@@ -349,7 +345,7 @@ def _add_cover_image(book: epub.EpubBook, image_path: str, title: str = ""):
         book.set_cover("cover.jpg", cover_content)
 
     except Exception as e:
-        print(f"Failed to add cover image: {e}")
+        log.warning("Failed to add cover image: %s", e)
 
 
 def _add_title_to_cover(img: Image.Image, title: str) -> Image.Image:
@@ -606,7 +602,7 @@ def _convert_image_for_kindle(local_path: str, original_filename: str) -> tuple[
 
             return buffer.getvalue(), new_filename, "image/jpeg"
     except Exception as e:
-        print(f"Failed to convert image {original_filename}, using original: {e}")
+        log.warning("Failed to convert image %s, using original: %s", original_filename, e)
         # Fall back to original file
         with open(local_path, "rb") as f:
             return f.read(), original_filename, _get_image_media_type(local_path)

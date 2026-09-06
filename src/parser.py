@@ -2,6 +2,7 @@
 HTML parsing module for extracting story content and metadata.
 """
 
+import logging
 import re
 import os
 import hashlib
@@ -15,6 +16,9 @@ import requests
 from bs4 import BeautifulSoup
 
 from . import net
+from .dates import parse_date
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -235,24 +239,14 @@ def _extract_publication_date(soup: BeautifulSoup) -> datetime | None:
     # Try meta tags first
     date_meta = soup.find("meta", {"property": "article:published_time"})
     if date_meta and date_meta.get("content"):
-        try:
-            return datetime.fromisoformat(date_meta["content"].replace("Z", "+00:00"))
-        except ValueError:
-            pass
+        parsed = parse_date(date_meta["content"])
+        if parsed:
+            return parsed
 
     # Try time element
     time_elem = soup.find("time")
     if time_elem:
-        datetime_attr = time_elem.get("datetime")
-        if datetime_attr:
-            try:
-                return datetime.fromisoformat(datetime_attr.replace("Z", "+00:00"))
-            except ValueError:
-                pass
-
-        # Try parsing the text content
-        date_text = time_elem.get_text(strip=True)
-        parsed = _parse_date_string(date_text)
+        parsed = parse_date(time_elem.get("datetime")) or parse_date(time_elem.get_text(strip=True))
         if parsed:
             return parsed
 
@@ -266,28 +260,9 @@ def _extract_publication_date(soup: BeautifulSoup) -> datetime | None:
     for pattern in date_patterns:
         match = re.search(pattern, page_text)
         if match:
-            parsed = _parse_date_string(match.group(1))
+            parsed = parse_date(match.group(1))
             if parsed:
                 return parsed
-
-    return None
-
-
-def _parse_date_string(date_str: str) -> datetime | None:
-    """Try to parse a date string in various formats."""
-    formats = [
-        "%B %d, %Y",      # "June 20, 2025"
-        "%b %d, %Y",      # "Jun 20, 2025"
-        "%Y-%m-%d",       # "2025-06-20"
-        "%d %B %Y",       # "20 June 2025"
-        "%d %b %Y",       # "20 Jun 2025"
-    ]
-
-    for fmt in formats:
-        try:
-            return datetime.strptime(date_str.strip(), fmt)
-        except ValueError:
-            continue
 
     return None
 
@@ -449,10 +424,10 @@ def download_image(url: str, output_dir: str, cancel: "threading.Event | None" =
     except net.Cancelled:
         raise
     except requests.exceptions.RequestException as e:
-        print(f"Failed to download image {url}: {e}")
+        log.warning("Failed to download image %s: %s", url, e)
         return None
     except Exception as e:
-        print(f"Unexpected error downloading image {url}: {e}")
+        log.warning("Unexpected error downloading image %s: %s", url, e)
         return None
 
 
@@ -492,7 +467,7 @@ def download_images(
 
         host = urlparse(img["url"]).netloc.lower()
         if consecutive_failures.get(host, 0) >= _HOST_FAILURE_LIMIT:
-            print(f"Skipping image on unreachable host {host}: {img['url']}")
+            log.info("Skipping image on unreachable host %s: %s", host, img["url"])
             img["error"] = "connection"
             continue
 
@@ -508,10 +483,10 @@ def download_images(
             # DNS failure, refused, connect timeout: the host itself is unreachable
             consecutive_failures[host] = consecutive_failures.get(host, 0) + 1
             img["error"] = "connection"
-            print(f"Failed to download image {img['url']}: {e}")
+            log.warning("Failed to download image %s: %s", img["url"], e)
         except Exception as e:
             # HTTP 404, read timeout, disk error: specific to this image
             img["error"] = "http"
-            print(f"Failed to download image {img['url']}: {e}")
+            log.warning("Failed to download image %s: %s", img["url"], e)
 
     return images

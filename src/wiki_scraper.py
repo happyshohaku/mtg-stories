@@ -6,6 +6,7 @@ Parses the Magic Story wiki page to get a catalog of all stories
 with links to original pages (often via web.archive.org).
 """
 
+import logging
 import re
 from datetime import datetime
 from urllib.parse import urlparse
@@ -15,8 +16,11 @@ from bs4 import BeautifulSoup, Tag
 
 from . import dedup
 from . import net
+from .dates import parse_date
 
 WIKI_URL = "https://mtg.wiki/page/Magic_Story"
+
+log = logging.getLogger(__name__)
 
 
 def fetch_wiki_story_sets() -> dict[int, list[dict]]:
@@ -33,7 +37,7 @@ def fetch_wiki_story_sets() -> dict[int, list[dict]]:
         response.raise_for_status()
         html = response.text
     except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch wiki page: {e}")
+        log.warning("Failed to fetch wiki page: %s", e)
         return {}
 
     stories_by_set = _parse_wiki_page(html)
@@ -530,30 +534,7 @@ def _parse_wiki_date(date_str: str) -> datetime | None:
 
     # Take the first date if there are multiple (e.g., "original, republished")
     date_str = date_str.split("(")[0].strip().rstrip(",").strip()
-
-    formats = [
-        "%Y-%m-%d",
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%d %B %Y",
-        "%d %b %Y",
-    ]
-
-    for fmt in formats:
-        try:
-            return datetime.strptime(date_str.strip(), fmt)
-        except ValueError:
-            continue
-
-    # Try to extract a date pattern from the string
-    match = re.search(r'(\d{4}-\d{2}-\d{2})', date_str)
-    if match:
-        try:
-            return datetime.strptime(match.group(1), "%Y-%m-%d")
-        except ValueError:
-            pass
-
-    return None
+    return parse_date(date_str)
 
 
 def _title_to_slug(title: str) -> str:

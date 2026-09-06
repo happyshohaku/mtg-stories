@@ -100,7 +100,11 @@ mtg-stories/
 │   ├── scraper.py        # Contentful API (storyGroups + articles)
 │   ├── wiki_scraper.py   # mtg.wiki archive scraper
 │   ├── parser.py         # HTML parsing & content extraction
-│   └── epub_builder.py   # EPUB file generation
+│   ├── epub_builder.py   # EPUB file generation
+│   ├── net.py            # HTTP session, cancellable retries, offline detection
+│   ├── dedup.py          # Cross-source dedup keys
+│   ├── dates.py          # Shared date parsing
+│   └── log.py            # File logging (%LOCALAPPDATA%\MTG-Stories\mtg-stories.log)
 ├── docs/                 # Documentation SOPs
 ├── run.py                # PyInstaller entry point
 ├── mtg_stories.spec      # PyInstaller build config

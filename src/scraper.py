@@ -3,12 +3,14 @@ Web scraping module for fetching MTG stories from the official website.
 Uses the Contentful API to get story sets and metadata.
 """
 
+import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from . import dedup
+from .dates import parse_date
 from . import net
 
 BASE_URL = "https://magic.wizards.com"
@@ -22,6 +24,8 @@ HEADERS = {
 
 # Years to fetch from the archive
 YEARS = list(range(datetime.now().year, 2013, -1))  # Current year down to 2014
+
+log = logging.getLogger(__name__)
 
 
 def fetch_all_story_sets() -> dict[int, list[dict]]:
@@ -43,7 +47,7 @@ def fetch_all_story_sets() -> dict[int, list[dict]]:
                 if sets:
                     all_sets[year] = sets
             except Exception as e:
-                print(f"Failed to fetch year {year}: {e}")
+                log.warning("Failed to fetch story groups for %s: %s", year, e)
 
     return all_sets
 
@@ -112,16 +116,7 @@ def _fetch_story_sets_for_year(year: int) -> list[dict]:
                     slug = story_fields.get("slug", "")
                     url = f"{BASE_URL}/en/news/{category}/{slug}" if slug else None
 
-                    # Parse publication date
-                    pub_date_str = story_fields.get("publishedDate", "")
-                    if pub_date_str:
-                        try:
-                            pub_date = datetime.strptime(pub_date_str[:19], "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            try:
-                                pub_date = datetime.strptime(pub_date_str[:10], "%Y-%m-%d")
-                            except ValueError:
-                                pass
+                    pub_date = parse_date(story_fields.get("publishedDate"))
 
                 elif content_type == "storyEntry":
                     # Older format: check CTA for URL
@@ -157,20 +152,6 @@ def _fetch_story_sets_for_year(year: int) -> list[dict]:
         })
 
     return story_sets
-
-
-def fetch_stories_for_set(story_set: dict) -> list[dict]:
-    """
-    Get stories for a story set.
-    The stories are already included in the story_set dict from fetch_all_story_sets().
-
-    Args:
-        story_set: A story set dict from fetch_all_story_sets()
-
-    Returns:
-        List of story dicts with url, title, published_date
-    """
-    return story_set.get("stories", [])
 
 
 def fetch_story_page(url: str, cancel: "threading.Event | None" = None) -> str:
@@ -295,16 +276,7 @@ def _fetch_all_articles() -> list[dict]:
 
             url = f"{BASE_URL}/en/news/magic-story/{slug}"
 
-            pub_date = None
-            pub_date_str = fields.get("publishedDate", "")
-            if pub_date_str:
-                try:
-                    pub_date = datetime.strptime(pub_date_str[:19], "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    try:
-                        pub_date = datetime.strptime(pub_date_str[:10], "%Y-%m-%d")
-                    except ValueError:
-                        pass
+            pub_date = parse_date(fields.get("publishedDate"))
 
             # Resolve author names
             author_names = []
@@ -386,7 +358,6 @@ def filter_article_sets(
             if filtered_stories:
                 filtered_set = dict(story_set)
                 filtered_set["stories"] = filtered_stories
-                filtered_set["story_count"] = len(filtered_stories)
                 filtered_sets.append(filtered_set)
 
         if filtered_sets:
