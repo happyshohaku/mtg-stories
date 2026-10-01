@@ -65,6 +65,54 @@ class ConnectionLost(Exception):
     """Raised inside the generation thread when the internet connection is gone."""
 
 
+# How each kind of list entry is presented. Kinds are the set's "source"
+# ("official" when absent, "articles", "wiki") plus "ebook" for sets that only
+# link to an external e-book. Rows, legend and details panel all read from here.
+KIND_COLORS = {
+    "official": "#000000",
+    "articles": "#1E6F8C",  # Teal
+    "wiki": "#8B4513",  # Saddle brown
+    "ebook": "#999999",
+}
+KIND_LEGEND = {
+    "official": "Story set",
+    "articles": "Article",
+    "wiki": "mtg.wiki (older stories)",
+    "ebook": "E-book only (can't convert)",
+}
+KIND_DESCRIPTIONS = {
+    "official": "Story set — the main story for this release, from the official Magic Story page.",
+    "articles": "Article — a companion piece from the Wizards website (world guide, card legends) "
+                "that isn't part of a story set.",
+    "wiki": "mtg.wiki — an older story no longer listed on the official Story page, "
+            "found through the mtg.wiki story list.",
+    "ebook": "E-book only — sold as a separate e-book, so it can't be converted.",
+}
+
+_IRREGULAR_PLURALS = {"story": "stories"}
+
+
+def _plural(count: int, word: str) -> str:
+    """'1 story', '10 stories', '2 e-books'."""
+    if count != 1:
+        word = _IRREGULAR_PLURALS.get(word, word + "s")
+    return f"{count} {word}"
+
+
+def _set_kind(story_set: dict) -> str:
+    """Which KIND_* entry applies to a set."""
+    if not story_set.get("stories") and story_set.get("external_links"):
+        return "ebook"
+    source = story_set.get("source")
+    return source if source in ("articles", "wiki") else "official"
+
+
+def _count_label(story_set: dict) -> str:
+    """'10 stories' for story sets, '1 article' for article sets."""
+    noun = "article" if story_set.get("source") == "articles" else "story"
+    return _plural(len(story_set.get("stories", [])), noun)
+
+
 def _first_story_date(story_set: dict):
     """Earliest published_date among a set's stories, or None if none are dated."""
     dates = [s.get("published_date") for s in story_set.get("stories", []) if s.get("published_date")]
@@ -154,7 +202,9 @@ class MTGStoriesApp:
             list_container,
             selectmode=tk.EXTENDED,
             font=("Segoe UI", 10),
-            activestyle="dotbox"
+            activestyle="dotbox",
+            # Keep the list selection when text is selected in the details panel
+            exportselection=False
         )
         self.listbox.grid(row=0, column=0, sticky="nsew")
         self.listbox.bind("<<ListboxSelect>>", self._on_select)
@@ -163,12 +213,23 @@ class MTGStoriesApp:
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.listbox.config(yscrollcommand=scrollbar.set)
 
+        # Colour legend for the list rows
+        legend_frame = ttk.Frame(list_frame)
+        legend_frame.grid(row=2, column=0, sticky="w", pady=(5, 0))
+        for kind, text in KIND_LEGEND.items():
+            ttk.Label(
+                legend_frame,
+                text=f"■ {text}",
+                foreground=KIND_COLORS[kind],
+                font=("Segoe UI", 8)
+            ).pack(side="left", padx=(0, 12))
+
         # Refresh button
         ttk.Button(
             list_frame,
             text="Refresh Sets",
             command=self._refresh_sets
-        ).grid(row=2, column=0, sticky="w", pady=(5, 0))
+        ).grid(row=3, column=0, sticky="w", pady=(5, 0))
 
         # Info panel — shows details when a story set is selected
         info_frame = ttk.LabelFrame(main_frame, text="Details", padding="5")
@@ -186,6 +247,8 @@ class MTGStoriesApp:
             bg=main_frame.winfo_toplevel().cget("bg"),
         )
         self.info_text.grid(row=0, column=0, sticky="nsew")
+        # A disabled Text does not take focus on click, so Ctrl+C would not work
+        self.info_text.bind("<Button-1>", lambda e: self.info_text.focus_set())
 
         # Output directory
         output_frame = ttk.LabelFrame(main_frame, text="Output Directory", padding="5")
@@ -315,13 +378,14 @@ class MTGStoriesApp:
         self.info_text.tag_configure("excerpt", font=("Segoe UI", 8, "italic"),
                                      foreground="#555555",
                                      lmargin1=indent, lmargin2=indent)
+        self.info_text.tag_configure("kind", font=("Segoe UI", 8, "italic"),
+                                     foreground="#555555")
 
         name = story_set.get("name", "Unknown")
         stories = story_set.get("stories", [])
-        source = story_set.get("source", "official")
 
-        self.info_text.insert(tk.END, f"{name}", "bold")
-        self.info_text.insert(tk.END, f"  ({source})\n")
+        self.info_text.insert(tk.END, f"{name}\n", "bold")
+        self.info_text.insert(tk.END, KIND_DESCRIPTIONS[_set_kind(story_set)] + "\n", "kind")
 
         for story in stories:
             title = story.get("title", "Unknown")
@@ -352,13 +416,14 @@ class MTGStoriesApp:
 
         total_stories = sum(len(s.get("stories", [])) for s in story_sets)
         self.info_text.insert(tk.END, f"{len(story_sets)} sets selected", "bold")
-        self.info_text.insert(tk.END, f"  ({total_stories} stories total)\n")
+        self.info_text.insert(tk.END, f"  ({_plural(total_stories, 'story')} total)\n")
 
         for story_set in story_sets:
             name = story_set.get("name", "Unknown")
-            count = len(story_set.get("stories", []))
-            source = story_set.get("source", "official")
-            self.info_text.insert(tk.END, f"{name} ({count} stories, {source})\n", "story")
+            detail = _count_label(story_set)
+            if story_set.get("source") == "wiki":
+                detail += ", mtg.wiki"
+            self.info_text.insert(tk.END, f"{name} ({detail})\n", "story")
 
         self.info_text.config(state="disabled")
 
@@ -471,7 +536,7 @@ class MTGStoriesApp:
 
         # Fetch from mtg.wiki
         try:
-            self.root.after(0, lambda: self._set_status("Fetching archive stories from mtg.wiki..."))
+            self.root.after(0, lambda: self._set_status("Fetching older stories from mtg.wiki..."))
             raw_wiki_sets = wiki_scraper.fetch_wiki_story_sets()
 
             # Deduplicate: remove wiki stories already in storyGroups or articles
@@ -564,21 +629,16 @@ class MTGStoriesApp:
                 name = story_set.get("name", "Unknown")
                 story_count = len(story_set.get("stories", []))
                 external_links = story_set.get("external_links", [])
-                source = story_set.get("source", "")
-                is_wiki = source == "wiki"
-                is_articles = source == "articles"
+                kind = _set_kind(story_set)
 
-                # Build display text — show source for non-storyGroup sets
-                if is_wiki:
-                    source_tag = " [mtg.wiki]"
-                elif is_articles:
-                    source_tag = " [articles]"
-                else:
-                    source_tag = ""
+                # Build display text — article sets say so in the count,
+                # mtg.wiki sets are tagged with where they came from
+                source_tag = " · mtg.wiki" if kind == "wiki" else ""
+                count_label = _count_label(story_set)
                 if story_count > 0 and external_links:
-                    display = f"  {name} ({story_count} stories, {len(external_links)} e-book){source_tag}"
+                    display = f"  {name} ({count_label}, {_plural(len(external_links), 'e-book')}){source_tag}"
                 elif story_count > 0:
-                    display = f"  {name} ({story_count} stories){source_tag}"
+                    display = f"  {name} ({count_label}){source_tag}"
                 elif external_links:
                     display = f"  {name} (e-book only)"
                 else:
@@ -588,14 +648,12 @@ class MTGStoriesApp:
                 self.listbox_items.append(story_set)
 
                 idx = self.listbox.size() - 1
-                # Gray out e-book only entries
+                # Gray out entries with nothing to convert; otherwise
+                # colour by kind (matches the legend under the list)
                 if story_count == 0:
-                    self.listbox.itemconfig(idx, fg="#999999")
-                # Give wiki/archive entries a distinct color
-                elif is_wiki:
-                    self.listbox.itemconfig(idx, fg="#8B4513")  # Saddle brown
-                elif is_articles:
-                    self.listbox.itemconfig(idx, fg="#1E6F8C")  # Teal
+                    self.listbox.itemconfig(idx, fg=KIND_COLORS["ebook"])
+                elif kind != "official":
+                    self.listbox.itemconfig(idx, fg=KIND_COLORS[kind])
 
                 total_sets += 1
 
@@ -611,13 +669,13 @@ class MTGStoriesApp:
         official_count = total_sets - wiki_count - article_count
 
         self.generate_btn.config(state="normal")
-        parts = [f"{official_count} official"]
+        parts = [_plural(official_count, "story set")]
         if article_count > 0:
-            parts.append(f"{article_count} from articles")
+            parts.append(_plural(article_count, "article set"))
         if wiki_count > 0:
-            parts.append(f"{wiki_count} from archive")
+            parts.append(f"{wiki_count} from mtg.wiki")
         verb = "Showing" if preserve_search else "Found"
-        self._set_status(f"{verb} {total_sets} story sets ({', '.join(parts)})")
+        self._set_status(f"{verb} {_plural(total_sets, 'set')} ({', '.join(parts)})")
 
     def _browse_output(self):
         """Open a folder browser for output directory."""
@@ -706,9 +764,7 @@ class MTGStoriesApp:
         def _refresh_drag_list():
             drag_list.delete(0, tk.END)
             for s in ordered_sets:
-                count = len(s.get("stories", []))
-                label = "story" if count == 1 else "stories"
-                drag_list.insert(tk.END, f"  {s.get('name', 'Unknown')} ({count} {label})")
+                drag_list.insert(tk.END, f"  {s.get('name', 'Unknown')} ({_count_label(s)})")
 
         _refresh_drag_list()
 
@@ -905,7 +961,7 @@ class MTGStoriesApp:
             raise Exception(f"No stories found for {epub_name}")
 
         log.info("Generating '%s': %d stories from %d set(s)", epub_name, total_stories, len(story_sets))
-        status(f"Found {total_stories} stories")
+        status(f"Found {_plural(total_stories, 'story')}")
         progress(10)
 
         # Fetch and parse stories, preserving set grouping

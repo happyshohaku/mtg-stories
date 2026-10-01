@@ -48,14 +48,9 @@ How to cut a release: version bump, build, tag and publish. Releases live at htt
 
 ## Release notes format
 
-Keep the same three sections as previous releases, with short bullets and no explanations:
+Keep the same two sections as previous releases, with short bullets and no explanations:
 
 ```markdown
-Download `MTG to EPUB.exe` below — no Python installation required.
-
-### What it does
-Converts Magic: The Gathering stories from the official Wizards of the Coast website into EPUB files for e-readers like Kindle.
-
 ### What's new in 1.2.0
 - One line per user-visible change
 - No internal details (retries, refactors, dedup rules)

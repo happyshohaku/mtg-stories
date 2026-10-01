@@ -44,23 +44,25 @@ def __init__(self, root: tk.Tk):
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  MTG Stories to EPUB v1.1.0             (Header)    │
+│  MTG Stories to EPUB v1.1.1             (Header)    │
 ├─────────────────────────────────────────────────────┤
 │  Story Sets (by Year)                               │
 │  Search: [________________________]                 │
 │  ┌───────────────────────────────────────────────┐  │
 │  │ ──── 2026 ────                                │  │
-│  │   Secrets of Strixhaven (1 stories) [articles]│  │
+│  │   Guide to Strixhaven (1 article)             │  │
 │  │ ──── 2025 ────                                │  │
 │  │   Edge of Eternities (5 stories)              │  │
-│  │   Lorwyn Eclipsed (4 stories)                │  │
-│  │   The Magic Story Podcast (3 stories) [wiki] │▼ │
+│  │   Lorwyn Eclipsed (4 stories)                 │  │
+│  │   The Magic Story Podcast (3 stories) · mtg.wiki│▼│
 │  └───────────────────────────────────────────────┘  │
+│  ■ Story set ■ Article ■ mtg.wiki ■ E-book only     │
 │  [Refresh Sets]                                     │
 ├─────────────────────────────────────────────────────┤
 │  Details                                            │
 │  ┌───────────────────────────────────────────────┐  │
-│  │ Edge of Eternities  (official)                │  │
+│  │ Edge of Eternities                            │  │
+│  │ Story set — the main story for this release...│  │
 │  │   Episode 1 — by Author — (2025-01-15)        │  │
 │  │   Episode 2 — by Author — (2025-01-22)        │  │
 │  └───────────────────────────────────────────────┘  │
@@ -187,8 +189,8 @@ Rebuilding the list clears the listbox selection, so this method also resets `se
 ```
 ──── 2025 ────                              (Year header, not selectable)
   Edge of Eternities (5 stories)            (Official storyGroup — black)
-  New Set Name (2 stories) [articles]       (Article source — teal)
-  Archive Set (3 stories) [mtg.wiki]        (Wiki source — saddle brown)
+  New Set Name (2 articles)                 (Article source — teal)
+  Archive Set (3 stories) · mtg.wiki        (Wiki source — saddle brown)
   Set Name (e-book only)                    (Grayed out, opens link)
 ```
 
