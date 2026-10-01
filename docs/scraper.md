@@ -10,6 +10,8 @@ The scraper module handles all Contentful API communication:
 3. Deduplication utilities for slug/URL matching
 4. Downloading individual story HTML pages
 
+All HTTP goes through `net.get()` (see [net.md](net.md)); this module never calls `requests` directly. Dates are parsed with `dates.parse_date()` and dedup keys come from `dedup.py`.
+
 ## Constants
 
 ```python
@@ -17,8 +19,9 @@ BASE_URL = "https://magic.wizards.com"
 CONTENTFUL_API = "https://cdn.contentful.com/spaces/s5n2t79q9icq/environments/master/entries"
 CONTENTFUL_TOKEN = "CPET-V_EFhnj_qi1lfps9BH3Se6V1B_bxE1J1VYi7qo"
 
+# Only sent to the Contentful API, never to story pages or other hosts.
+# The User-Agent is set once on the shared session in net.py.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Authorization": f"Bearer {CONTENTFUL_TOKEN}"
 }
 
@@ -182,35 +185,34 @@ Removes articles whose slug or URL path already exists in `known_slugs`. Filters
 
 #### get_article_slugs(article_sets)
 
-Extracts slugs from article sets for wiki deduplication. Includes:
+Extracts dedup keys from article sets for wiki deduplication, via `dedup.story_keys()`. Includes:
 - Raw slugs
-- URL paths
-- Title-based slugs (for fuzzy matching against wiki story titles)
+- URL paths (archive.org URLs are unwrapped to the original path)
+- Set-scoped title keys (`<normalized set name>::<title slug>`)
+- Bare title slugs, only for titles specific enough to stand alone
 
-**Returns:** `set[str]` of normalized slugs.
+Generic titles such as "Prologue", "Epilogue" or "Chapter 3" never produce a bare key, so a wiki story with one of those titles is only treated as a duplicate when its set name matches too.
+
+**Returns:** `set[str]` of keys.
 
 ---
 
-### fetch_stories_for_set(story_set: dict)
-
-**Purpose:** Get stories for a story set.
-
-**Note:** Stories are already included in the story_set dict from `fetch_all_story_sets()`. This function simply returns `story_set.get("stories", [])`.
-
-### fetch_story_page(url: str)
+### fetch_story_page(url: str, cancel: threading.Event | None = None)
 
 **Purpose:** Download an individual story page HTML.
 
 **Features:**
-- 0.5 second delay for regular requests, 1.0 second for archive.org
-- 30 second timeout (60 for archive.org)
-- Uses User-Agent header (no Authorization needed for public pages)
+- Politeness delay before each request: 0.5 seconds, or 1.0 second for archive.org. The delay is `net.wait()`, so Stop interrupts it
+- Timeouts are `(connect, read)`: `(5, 30)` normally, `(5, 60)` for archive.org
+- Up to 3 retries with backoff on 429/5xx/connection errors
+- Raises `net.Cancelled` when the cancel event is set and `net.Offline` when the internet is gone
 - Follows redirects
 
 ## Error Handling
 
 - **Year fetch failures:** Logged and skipped, other years continue
-- **HTTP errors:** Raised via `response.raise_for_status()`
+- **HTTP errors:** Raised via `response.raise_for_status()` after retries are exhausted
+- **No internet:** `net.Offline` (a `requests.ConnectionError`) on the first failed attempt
 - **Missing data:** Returns empty lists/dicts, doesn't crash
 - **Pagination:** Stops when `skip >= total`
 
@@ -228,7 +230,8 @@ Extracts slugs from article sets for wiki deduplication. Includes:
 Update `fetch_article_story_sets()` to handle new title formats beyond the `" | "` delimiter.
 
 ### Adjusting rate limiting:
-Modify the sleep duration in `fetch_story_page()`:
+Modify the delay in `fetch_story_page()`. Keep it on `net.wait()` so Stop can interrupt it:
 ```python
-time.sleep(1.0)  # Increase delay if getting rate limited
+net.wait(1.0 if is_archive else 0.5, cancel)
 ```
+Retry counts, backoff and timeouts live in `net.py`.

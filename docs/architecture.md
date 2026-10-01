@@ -101,13 +101,16 @@ Multiple sets? ──► Show reorder dialog (title, drag-and-drop order, date s
 Check if output file exists → save-as dialog if so
        │
        ▼
+Generate button becomes Stop; working folder created inside the output directory
+       │
+       ▼
 For each story set, for each story:
    │
-   ├──► Fetch HTML page (scraper)
+   ├──► Fetch HTML page (scraper)        ── fails? record as missing, continue
    │
    ├──► Parse content (parser)
    │
-   └──► Download images (parser)
+   └──► Download images (parser)         ── no internet? abort the run
        │
        ▼
 Build EPUB (epub_builder)
@@ -116,11 +119,13 @@ Build EPUB (epub_builder)
    └──► Multiple sets: grouped TOC with section headers per set
        │
        ▼
-Save to output directory
+Save to output directory; working folder deleted
        │
        ▼
-Show success message
+Show success message (or the list of stories that could not be fetched)
 ```
+
+Stop at any point resets the UI immediately and writes nothing.
 
 ## Module Responsibilities
 
@@ -131,6 +136,7 @@ Show success message
 - Details panel showing story info (single) or combined summary (multi)
 - Reorder dialog with drag-and-drop and date sorting for combined EPUBs
 - 3-source fetch, enrichment, dedup, and merge orchestration
+- Within each year, sets are sorted by the date of their first story, newest first; undated sets go last
 - Generation runs with a per-run id and cancel event: Stop resets the UI immediately and abandons the worker; lost internet aborts the run; stories that fail are listed in the completion dialog
 - Images are downloaded to a `.mtg-stories-working-*` folder inside the chosen output directory and that folder is deleted when the run ends (also on window close). The app never writes outside the output directory
 - File-exists detection with save-as dialog
@@ -186,38 +192,45 @@ Show success message
 
 ## Threading Model
 
-The GUI uses Python's `threading` module to prevent UI freezing:
+The GUI uses Python's `threading` module to prevent UI freezing. Workers are daemon threads and never touch widgets directly; they schedule callbacks on the main thread with `root.after(0, ...)`.
+
+**Story set fetch** (`_refresh_sets` / `_fetch_sources`): one worker fetches the three sources in priority order and pushes a merged list after each, so the listbox fills progressively. Each source has its own error guard; the whole body is also wrapped so an unexpected error shows a dialog instead of leaving the app on "Fetching...".
+
+**EPUB generation** (`_generate_epub` / `_do_generate`): each run gets a run id and its own cancel `threading.Event`.
 
 ```python
-# Pattern used throughout gui.py
-def _long_operation(self):
-    def work():
-        try:
-            result = do_something()
-            self.root.after(0, lambda: self._handle_result(result))
-        except Exception as e:
-            self.root.after(0, lambda: self._show_error(str(e)))
+self.generation_id += 1
+run_id = self.generation_id
+cancel = threading.Event()
 
-    threading.Thread(target=work, daemon=True).start()
+def generate():
+    try:
+        path, failures = self._do_generate(sets, name, output_path, run_id, cancel)
+        self._post(run_id, lambda: self._generation_complete(path, failures))
+    except net.Cancelled:
+        self._post(run_id, self._generation_cancelled)
+    except ConnectionLost as e:
+        message = str(e)   # capture now: "e" is unbound once the except block ends
+        self._post(run_id, lambda: self._generation_aborted(message))
 ```
 
 Key points:
-- Background threads are daemon threads (exit when main thread exits)
-- UI updates use `root.after(0, callback)` to run on main thread
-- Status/progress updates also use `root.after()` for thread safety
-- Fetch thread uses `try/finally` to guarantee progress bar cleanup
-- Indeterminate progress bar animates during story fetch; determinate during EPUB generation
-- Listbox updates progressively after each fetch phase (storyGroups → articles → wiki)
+- `_post(run_id, fn)` runs `fn` on the main thread only if `run_id` is still the current run. Callbacks from an abandoned run are dropped
+- **Stop is instant.** `_cancel_generate()` sets the cancel event, bumps `generation_id` and resets the UI at once. It does not wait for the worker, which exits at its next cancel check (at worst one socket timeout later) and removes its own working folder
+- **Lost internet aborts the run.** `net.get()` raises `net.Offline` on the first connection failure when a probe confirms there is no internet; the GUI shows "Lost internet connection" and writes no EPUB. One unreachable site with the internet up is recorded as a missing story instead
+- Never reference an `except ... as e` variable inside a lambda that runs later; capture the message in a local first
+- Indeterminate progress bar animates during story set fetch; determinate during EPUB generation
 
 ## Error Handling
 
 Errors are handled at each layer:
 
-1. **Scraper**: HTTP errors, API errors → Exception raised
-2. **Wiki Scraper**: Fetch/parse errors → Logged, returns empty
-3. **Parser**: Missing elements → Fallback values, continue
-4. **EPUB Builder**: Image failures → Skip image, continue
-5. **GUI**: All exceptions → Error dialog to user; source failures → skipped, other sources continue
+1. **Net**: 429/5xx/connection errors → retried with backoff; no internet → `net.Offline`; Stop → `net.Cancelled`
+2. **Scraper**: HTTP errors, API errors → Exception raised
+3. **Wiki Scraper**: Fetch/parse errors → Logged, returns empty
+4. **Parser**: Missing elements → Fallback values, continue; failed images → `local_path` stays `None`
+5. **EPUB Builder**: Image failures → Skip image and remove its `<img>` tag, continue
+6. **GUI**: Source failures → skipped, other sources continue. A story that cannot be fetched → listed in the completion dialog ("Completed with missing stories"). Lost internet → run aborted, no EPUB. Anything else → error dialog
 
 ## File Storage
 
@@ -239,5 +252,7 @@ Currently hardcoded values (could be made configurable):
 | `YEARS` | scraper.py | Years to fetch (dynamic, current year down to 2014) |
 | `output_dir` | gui.py | Default output path |
 | `EPUB_CSS` | epub_builder.py | EPUB styling |
+| Timeouts, retry counts, backoff, `PROBE_URL` | net.py | Network behaviour |
+| `_HOST_FAILURE_LIMIT` | parser.py | Consecutive connection failures before a story's remaining images on that host are skipped |
 | Wiki URL | wiki_scraper.py | mtg.wiki story list page |
 | `__version__` | __init__.py | App version (shown in title bar) |

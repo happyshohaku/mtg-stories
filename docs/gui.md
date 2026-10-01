@@ -13,7 +13,7 @@ The GUI module provides a Tkinter-based graphical interface for:
 - Grouped table of contents when combining multiple sets
 - File-exists detection with save-as dialog
 - Selecting output directory
-- Triggering EPUB generation
+- Triggering EPUB generation, stopping it, and reporting stories that could not be fetched
 - Displaying progress and status
 
 ## Class: MTGStoriesApp
@@ -32,6 +32,9 @@ def __init__(self, root: tk.Tk):
     self.listbox_items: list[dict | None] = []  # None for year headers
     self.output_dir = os.path.join(os.path.expanduser("~"), "Documents", "MTG-Stories")
     self.selection_order: list[int] = []  # Track click order for multi-select
+    self.generation_id = 0                # Bumped per run; stale callbacks are dropped
+    self.cancel_event = threading.Event() # Set when the user presses Stop
+    self.loading = False                  # True while the 3-source fetch is running
 
     self._create_widgets()
     self.root.after(100, self._refresh_sets)  # Auto-fetch on startup
@@ -67,10 +70,10 @@ def __init__(self, root: tk.Tk):
 │  │ C:\Users\...\Documents\MTG-Stories  │            │
 │  └─────────────────────────────────────┘            │
 ├─────────────────────────────────────────────────────┤
-│  [          Generate EPUB / Open Link          ]    │
+│  [      Generate EPUB / Open Link / Stop       ]    │
 ├─────────────────────────────────────────────────────┤
 │  ████████████████░░░░░░░░░░░░░░░░  45%              │
-│  Fetching story 3/7: Edge of Eternities...          │
+│  Fetching story 3/7: Episode 3 (image 2/9)...       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -106,7 +109,7 @@ root (Tk)
 #### _on_search(*args)
 Triggered on every keystroke in the search entry. Filters `story_sets_by_year` by matching the query against set names and individual story titles (case-insensitive). Calls `_update_sets_list()` with `preserve_search=True` to avoid overwriting the master data.
 
-Empty search restores the full list.
+Empty search restores the full list. While a search is active the status reads "Showing N story sets"; the full list reads "Found N story sets". Searching during the initial fetch does not disturb the progress bar.
 
 ---
 
@@ -140,16 +143,16 @@ Updates the progress bar (0-100 scale). Calls `root.update_idletasks()`.
 ### Data Methods
 
 #### _refresh_sets()
-Fetches story sets from all three sources in a background thread. Uses an indeterminate progress bar and progressive loading (listbox updates after each phase).
+Starts the 3-source fetch in a background thread. Uses an indeterminate progress bar and progressive loading (listbox updates after each phase). The worker body is `_fetch_sources()`.
 
 **Flow:**
 ```
-Disable generate button
+Disable generate button, set loading = True
 Start indeterminate progress bar (50ms interval)
 Set status "Fetching..."
        │
        ▼
-Background thread (wrapped in try/finally for progress bar cleanup):
+Background thread → _fetch_sources():
   ├── scraper.fetch_all_story_sets()        → contentful_sets
   │     └── _update_sets_list() ← progressive update
   ├── scraper.fetch_article_story_sets()    → raw_article_sets
@@ -158,18 +161,27 @@ Background thread (wrapped in try/finally for progress bar cleanup):
   │     ├── filter_article_sets() against storyGroup slugs
   │     └── _update_sets_list() ← progressive update
   └── wiki_scraper.fetch_wiki_story_sets()  → raw_wiki_sets
-        ├── filter_wiki_sets() against storyGroup + article slugs
+        ├── filter_wiki_sets() against storyGroup + article keys
         └── _update_sets_list() ← final update
        │
        ▼
-finally: stop progress bar, reset to determinate mode
+except: unexpected error → error dialog (never left stuck on "Fetching...")
+finally: stop progress bar, reset to determinate mode, loading = False
 ```
 
+Each source has its own `try/except`; a failed source is logged and skipped.
+
 #### _merge_story_sets(contentful_sets, article_sets, wiki_sets)
-Merges all three sources into a single dict by year. Order per year: storyGroups first, then articles, then wiki.
+Merges all three sources into a single dict by year.
+
+Within a year, sets are sorted by the date of their **first** (earliest) story, newest first, matching the newest-first year headers. This puts single-story "Planeswalker's Guide" and "Legends of" articles next to the set they belong to. Sets with no dated stories go last, keeping source order (storyGroups, articles, wiki) among themselves. Ties keep source order too, so an official set comes before an article set that starts the same day.
+
+Helpers: `_first_story_date(story_set)` and `_set_sort_key(story_set)` at module level.
 
 #### _update_sets_list(sets_by_year, preserve_search=False)
 Populates the listbox with story sets grouped by year.
+
+Rebuilding the list clears the listbox selection, so this method also resets `selection_order`, clears the details panel and restores the "Generate EPUB" button label. Without that, stale indices would point at different rows after a search or a progressive update.
 
 **Display Format:**
 ```
@@ -228,7 +240,9 @@ Shows a combined summary in the details panel when multiple sets are selected: t
 ### Generation Methods
 
 #### _generate_epub()
-Main generation entry point. Handles single-select (direct generation or link opening) and multi-select (shows reorder dialog first).
+Main generation entry point. Handles single-select (direct generation or link opening) and multi-select (shows reorder dialog first). If the output file already exists, prompts with a save-as dialog before starting.
+
+Starts a run: bumps `generation_id`, creates a fresh cancel event, turns the button into **Stop**, and launches the worker thread.
 
 #### _show_generate_dialog(story_sets: list[dict]) -> tuple[str, list[dict]] | None
 Modal dialog for multi-set EPUB generation. Returns `(title, ordered_story_sets)` or `None` if cancelled.
@@ -239,14 +253,17 @@ Modal dialog for multi-set EPUB generation. Returns `(title, ordered_story_sets)
 - "Date ↑" / "Date ↓" sort buttons (by earliest story date)
 - Generate / Cancel buttons
 
-#### _do_generate(story_sets: list[dict], epub_name: str, output_path: str | None) -> str
-Performs the actual EPUB generation in a background thread. Accepts one or more story sets.
+#### _do_generate(story_sets, epub_name, output_path, run_id, cancel) -> tuple[str, list[str]]
+Performs the actual EPUB generation on the worker thread. Returns `(epub_path, failures)` where `failures` is a list of human-readable messages for stories left out of the book.
 
-**Multi-set behavior:**
-- Fetches/parses stories preserving set grouping as `(set_name, [Story, ...])` tuples
-- Passes groups to `epub_builder.create_epub()` for nested TOC (multi-set only)
-- Single-set uses flat TOC as before
-- If output file already exists, prompts with save-as dialog before starting
+**Behaviour:**
+- Creates the working folder `.mtg-stories-working-*` **inside the chosen output directory** and removes it in a `finally` block. The app never writes anywhere else (no system temp, no AppData, no log files)
+- Fetches/parses stories preserving set grouping as `(set_name, [Story, ...])` tuples; passes groups to `epub_builder.create_epub()` for a nested TOC (multi-set only)
+- Status shows per-image progress: "Fetching story 3/7: Title (image 2/9)..."
+- A story that fails (404, site unreachable, parse error) is added to `failures` and the run continues
+- `net.Offline` → raises `ConnectionLost`, the run aborts and no EPUB is written
+- `net.Cancelled` → the run stops; if the EPUB had just been written it is deleted
+- If every story fails, raises with the first few reasons
 
 **Progress Updates:**
 | Progress | Action |
@@ -257,31 +274,51 @@ Performs the actual EPUB generation in a background thread. Accepts one or more 
 | 90% | Building EPUB |
 | 100% | Complete |
 
+#### _cancel_generate()
+The Stop button. Sets the cancel event, bumps `generation_id`, and resets the UI immediately via `_generation_cancelled()`. It does not wait for the worker.
+
+#### _post(run_id, fn)
+Schedules `fn` on the main thread, but only runs it if `run_id` is still the current run. All worker-to-UI calls during generation go through this, which is what makes Stop instant: an abandoned worker's status updates and completion dialog are silently dropped.
+
+#### Outcome handlers
+| Handler | When | Result |
+|---------|------|--------|
+| `_generation_complete(path, failures)` | EPUB written | "Success" dialog, or "Completed with missing stories" listing up to 10 failures |
+| `_generation_cancelled()` | Stop pressed | Status "Generation stopped. No EPUB was written." |
+| `_generation_aborted(message)` | Internet lost | "Lost internet connection" warning naming the story being fetched |
+| `_show_error(message)` | Anything else | Error dialog |
+
+All four restore the Generate button through `_reset_generate_button()`.
+
 ---
 
 ## Threading Pattern
 
-All long-running operations use this pattern:
+Workers are daemon threads and never touch widgets directly.
 
 ```python
-def _some_operation(self):
-    self.generate_btn.config(state="disabled")
-    self._set_status("Working...")
+def generate():
+    try:
+        path, failures = self._do_generate(sets, name, output_path, run_id, cancel)
+        self._post(run_id, lambda: self._generation_complete(path, failures))
+    except net.Cancelled:
+        self._post(run_id, self._generation_cancelled)
+    except ConnectionLost as e:
+        message = str(e)
+        self._post(run_id, lambda: self._generation_aborted(message))
+    except Exception as e:
+        message = f"Generation failed: {e}"
+        self._post(run_id, lambda: self._show_error(message))
 
-    def work():
-        try:
-            result = do_long_operation()
-            self.root.after(0, lambda: self._handle_result(result))
-        except Exception as e:
-            self.root.after(0, lambda: self._show_error(str(e)))
-
-    threading.Thread(target=work, daemon=True).start()
+threading.Thread(target=generate, daemon=True).start()
 ```
 
 **Key Points:**
 - `daemon=True` - Thread exits when main thread exits
-- `root.after(0, callback)` - Schedules callback on main thread
+- `root.after(0, callback)` / `_post(run_id, callback)` - Schedules callback on main thread
 - Never update Tkinter widgets from background threads directly
+- Capture the exception text in a local before building the lambda. Python unbinds the `except ... as e` name when the block ends, and the lambda runs later (`NameError: free variable 'e' referenced before assignment`)
+- Pass the `cancel` event to every network call made during generation
 
 ## Entry Point
 
@@ -289,18 +326,25 @@ def _some_operation(self):
 
 ```python
 def run():
+    setup_logging()                      # stderr only, never a file
     root = tk.Tk()
-
-    # Try to set modern theme (optional)
-    try:
-        root.tk.call("source", "azure.tcl")
-        root.tk.call("set_theme", "light")
-    except Exception:
-        pass  # Fall back to default
-
+    icon = _icon_path()                  # assets/icon.ico, source checkout or PyInstaller bundle
+    if icon:
+        root.iconbitmap(icon)
     app = MTGStoriesApp(root)
-    root.mainloop()
+
+    def on_close():
+        app.cancel_event.set()           # stop any running generation
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+    try:
+        root.mainloop()
+    finally:
+        cleanup_temp_dirs()              # remove the working folder of a run that was mid-download
 ```
+
+Working folders of runs in progress are tracked in `_active_temp_dirs`. `cleanup_temp_dirs()` runs on window close and again via `atexit`, because closing the window kills the daemon worker before its own `finally` can run.
 
 ## Maintenance Notes
 
@@ -316,5 +360,8 @@ Update `_update_sets_list()` to change how items are formatted.
 ### Modifying the details panel:
 Update `_show_info()` to change what info is displayed per story.
 
-### Theming:
-The app tries to load `azure.tcl` for a modern look. If not available, uses default Tkinter theme.
+### Icon:
+`assets/icon.ico` is embedded in the exe (`icon=` in `mtg_stories.spec`), bundled as data, and set as the window icon in `run()`. To change it, replace that file and rebuild.
+
+### Adding network calls to generation:
+Use `net.get(..., cancel=cancel)` and let `net.Cancelled` / `net.Offline` propagate. Do not call `requests` directly and do not use `time.sleep`; use `net.wait(seconds, cancel)`.

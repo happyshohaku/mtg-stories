@@ -218,22 +218,19 @@ These are stored separately and opened in the browser rather than converted to E
 
 ## Rate Limiting
 
-The Contentful CDN doesn't have strict rate limits, but the application adds a 0.5-second delay between story page requests to be respectful:
-
-```python
-time.sleep(0.5)
-```
+The Contentful CDN doesn't have strict rate limits, but the application waits before each story page request to be respectful: 0.5 seconds, or 1.0 second for archive.org. The wait is `net.wait()`, so pressing Stop interrupts it.
 
 ## Error Handling
 
-Common API errors:
+All requests go through `net.get()` (see [net.md](net.md)), which retries transient failures automatically.
 
-| Status | Meaning | Action |
-|--------|---------|--------|
-| 401 | Invalid token | Update token (see above) |
-| 404 | Content not found | Check content type/year |
-| 429 | Rate limited | Add delays between requests |
-| 500+ | Server error | Retry later |
+| Status | Meaning | What the app does |
+|--------|---------|-------------------|
+| 401 | Invalid token | Not retried. Update token (see above) |
+| 404 | Content not found | Not retried. Check content type/year |
+| 429 | Rate limited | Retried up to 3 times with backoff, honouring `Retry-After` (capped at 30s) |
+| 500, 502, 503, 504 | Server error | Retried up to 3 times with backoff (1s, 2s, 4s) |
+| Connection error | Host unreachable | Probes for internet access; aborts with "Lost internet connection" if offline, otherwise retries |
 
 ## Example Request
 

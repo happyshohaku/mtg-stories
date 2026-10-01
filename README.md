@@ -13,7 +13,7 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 - 3-layer deduplication prevents duplicate stories across sources
 - Real-time search bar to filter by set name or story title
 - Details panel showing story titles, authors, and dates on selection
-- Story sets grouped by year with newest first
+- Story sets grouped by year with newest first; within a year, ordered by the date of each set's first story
 - Generate EPUB files with all episodes and side stories
 - Multi-select story sets to combine into a single EPUB
 - Drag-and-drop reorder dialog with date sorting for combined EPUBs
@@ -22,6 +22,10 @@ A Python GUI application that scrapes Magic: The Gathering stories from the offi
 - Embedded images converted to Kindle-compatible format (SVG pass-through)
 - Professional cover image with title overlay (1600x2560, standard book ratio)
 - Direct links to external e-books (Amazon, etc.) for e-book only entries
+- Stop button cancels a running generation instantly
+- Stops automatically with a clear message if the internet connection drops
+- Lists any stories that could not be fetched instead of silently leaving them out
+- Writes only to the output folder you choose
 
 ## Setup
 
@@ -92,11 +96,14 @@ The executable is created at `dist/MTG to EPUB.exe`.
 5. Click "Generate EPUB" to create the e-book
    - For a single set with only an external e-book link, the button shows "Open Link"
    - For multiple sets, a dialog lets you edit the EPUB title and reorder sets via drag-and-drop
-6. Once complete, you'll be prompted to open the output folder
+6. While a book is generating, the button reads "Stop". Pressing it cancels immediately and writes nothing
+7. Once complete, you'll be prompted to open the output folder. If any stories could not be fetched, the dialog lists them
 
 ### Output
 
 EPUB files are saved to `~/Documents/MTG-Stories/` by default. The filename matches the story set name.
+
+While a book is generating, images are downloaded to a `.mtg-stories-working-*` folder inside the output directory. It is deleted when the run ends, is stopped, or the window is closed. The application writes nowhere else on your machine.
 
 ## Project Structure
 
@@ -114,6 +121,8 @@ mtg-stories/
 │   ├── dedup.py          # Cross-source dedup keys
 │   ├── dates.py          # Shared date parsing
 │   └── log.py            # Logging setup (stderr only, no files written)
+├── assets/
+│   └── icon.ico          # App icon (exe + window)
 ├── tests/                # pytest suite (offline)
 ├── docs/                 # Documentation SOPs
 ├── run.py                # PyInstaller entry point
@@ -121,6 +130,7 @@ mtg-stories/
 ├── build_exe.bat         # One-click build script
 ├── requirements.txt      # Python dependencies
 ├── requirements-dev.txt  # + pytest
+├── TODO.md               # Deferred ideas
 ├── .gitignore
 └── README.md
 ```
@@ -135,6 +145,8 @@ Detailed documentation for developers is available in the `docs/` folder:
 - [Parser Module](docs/parser.md) - HTML parsing and content extraction
 - [EPUB Builder Module](docs/epub-builder.md) - EPUB generation and styling
 - [GUI Module](docs/gui.md) - Tkinter interface implementation
+- [Network Layer](docs/net.md) - Retries, timeouts, cancellation and offline detection
+- [Release Process](docs/release.md) - Version bump, build, tag and publish
 
 ## Dependencies
 

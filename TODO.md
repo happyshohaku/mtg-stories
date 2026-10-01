@@ -24,5 +24,6 @@ The success dialog uses `os.startfile`, which only exists on Windows. Use `subpr
 ## Smaller items
 
 - `.gitignore` contains `claude.md`, which also matches `CLAUDE.md` on Windows, so that file is untracked.
+- `assets/icon.ico` has a single 32 px frame (the Secret Lair site favicon, used as is). Explorer's large icon views upscale it; a multi-size icon with a 256 px frame would be sharper.
 - SVG images are embedded as-is; Kindle does not render SVG. Dropping them may be cleaner.
 - The Contentful storyGroup query has no pagination (default limit 100 per year); fine today, would silently truncate if a year ever had more.

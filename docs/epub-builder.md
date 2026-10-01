@@ -44,24 +44,25 @@ body {
 
 p {
     margin: 0.5em 0;
-    text-indent: 1.5em;
-}
-
-p:first-of-type {
-    text-indent: 0;
 }
 ```
 
-### Tables (Dark Theme for Readability)
+### Tables
 ```css
 table {
-    width: 100% !important;
-    max-width: 100% !important;
-    background: #1a1a1a !important;
-    color: #fff;
+    width: 100%;
+    max-width: 100%;
+    border-collapse: collapse;
     table-layout: fixed;
 }
+
+th, td {
+    border: 1px solid #999;
+    vertical-align: top;
+}
 ```
+
+Tables use neutral borders on the page background. No forced colors and no `!important`, so they read correctly on e-ink and respect the reader's theme.
 
 ### Scene Breaks
 ```css
@@ -114,15 +115,15 @@ Create EpubBook
 
 **Metadata:**
 ```python
-book.set_identifier(f"mtg-stories-{uuid.uuid4().hex[:8]}")
+# Deterministic: the same title always gives the same identifier
+book.set_identifier(f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, 'mtg-stories:' + set_name.strip().lower())}")
 book.set_title(set_name)
 book.set_language("en")
 
-# Collect unique authors
-authors = set(s.author for s in stories if s.author != "Unknown Author")
-for author in authors:
-    book.add_author(author)
+# Primary author = first story with a known author, else "Wizards of the Coast"
 ```
+
+The identifier is derived from the title so that regenerating a set produces the same book as far as an e-reader is concerned: reading position is kept and no duplicate appears in the library.
 
 **File Naming:**
 ```python
@@ -247,8 +248,9 @@ f"chapter_{chapter_num:02d}_{safe_title}.xhtml"
 1. **Convert scene breaks** - `***` or `* * *` becomes styled div
 2. **Ensure image alt text** - Add "Story illustration" if missing
 3. **Update image paths** - Map original filenames to converted filenames (webp → jpg)
-4. **Remove scripts/styles** - Final cleanup
-5. **Extract body content** - Return just the content, not full HTML wrapper
+4. **Drop missing images** - An `<img>` whose file is not in `image_mapping` (download failed or was skipped) is removed, so the book never contains a broken image reference
+5. **Remove scripts/styles** - Final cleanup
+6. **Extract body content** - Return just the content, not full HTML wrapper
 
 ---
 
@@ -312,7 +314,7 @@ The generated EPUB contains:
 book.epub/
 ├── META-INF/
 │   └── container.xml
-├── OEBPS/
+├── EPUB/
 │   ├── content.opf          # Package document
 │   ├── toc.ncx              # Navigation (NCX)
 │   ├── nav.xhtml            # Navigation (EPUB3)
@@ -332,7 +334,7 @@ book.epub/
 
 - **Cover image failures:** Logged, book created without cover
 - **Image conversion failures:** Falls back to original format
-- **Missing images:** Skipped, chapter created without image
+- **Missing images:** Not embedded, and their `<img>` tags are removed from the chapter
 
 ## Maintenance Notes
 

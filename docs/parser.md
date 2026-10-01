@@ -23,18 +23,21 @@ class Story:
     author: str
     publication_date: datetime | None
     content_html: str
-    images: list[dict]  # [{"url": ..., "local_path": ..., "filename": ...}]
+    images: list[dict]  # [{"url": ..., "local_path": ..., "filename": ..., "error": ...}]
 ```
 
 ## Functions
 
-### parse_story(html: str, url: str) -> Story
+### parse_story(html, url, fallback_author=None, fallback_date=None, fallback_title=None) -> Story
 
 **Purpose:** Main entry point - parse a story page and extract all content.
 
 **Parameters:**
 - `html` - HTML content of the story page
 - `url` - URL of the story (for resolving relative links)
+- `fallback_author`, `fallback_date`, `fallback_title` - used when the page yields "Unknown Author", no date, or "Untitled" (wiki rows and article metadata supply these)
+
+**archive.org pages:** the Wayback Machine toolbar and injected scripts are stripped first (`_strip_wayback_toolbar`), and relative links are resolved against the original URL rather than the archive URL (`_get_base_url_for_content`).
 
 **Returns:** `Story` object with all extracted data.
 
@@ -142,16 +145,7 @@ for script in soup.find_all("script", {"type": "application/ld+json"}):
    - `Month DD, YYYY` (e.g., "Jun 20, 2025")
    - `YYYY-MM-DD` (e.g., "2025-06-20")
 
-**Date Formats Supported:**
-```python
-formats = [
-    "%B %d, %Y",  # "June 20, 2025"
-    "%b %d, %Y",  # "Jun 20, 2025"
-    "%Y-%m-%d",   # "2025-06-20"
-    "%d %B %Y",   # "20 June 2025"
-    "%d %b %Y",   # "20 Jun 2025"
-]
-```
+**Date parsing** is done by `dates.parse_date()`, shared with both scrapers. It accepts ISO 8601 with or without a timezone, Contentful's `YYYY-MM-DD HH:MM:SS`, `YYYY-MM-DD`, and English month-name forms ("June 20, 2025", "Jun 20, 2025", "20 June 2025"). It always returns a naive `datetime` so dates from different sources sort together.
 
 ---
 
@@ -166,9 +160,10 @@ formats = [
 2. `article .entry-content`
 3. `.article-content`
 4. `.story-content`
-5. `article`
-6. `main`
-7. `body` (fallback)
+5. Older WotC and archive.org layouts: `#content-detail-page-of-an-article`, `.article-detail`, `#main-content`, `#article-body`, `td.article-body`, `#bodycontent`, `.main-content`
+6. `article`
+7. `main`
+8. `body` (fallback)
 
 **Processing Steps:**
 
@@ -177,6 +172,7 @@ formats = [
    - `script`, `style`, `nav`, `header`, `footer`
    - `iframe` (not supported in EPUB)
    - `.social-share`, `.comments`, `.related-articles`, `.advertisement`
+   - Wayback Machine elements (`#wm-ipp-base`, `[id^='wm-']`, ...) and old site chrome (`.breadcrumb`, `.site-footer`, ...)
 3. **Process images:**
    - Get URL from `src` or `data-src`
    - Generate unique filename
@@ -184,7 +180,7 @@ formats = [
    - Remove `srcset`, `data-src`, `data-srcset`, `loading` attributes
 4. **Process links:**
    - Keep internal anchor links (`#section`)
-   - Remove magic.wizards.com links (keep text)
+   - Remove magic.wizards.com and web.archive.org links (keep text)
    - Keep other external links
 5. **Normalize whitespace**
 
@@ -193,7 +189,8 @@ formats = [
 {
     "url": "https://media.wizards.com/image.jpg",
     "filename": "abc123_image.jpg",
-    "local_path": None  # Set when downloaded
+    "local_path": None,  # Set when downloaded
+    "error": None        # After download: None, "connection" or "http"
 }
 ```
 
@@ -207,10 +204,10 @@ formats = [
 1. Extract path from URL
 2. Get original filename from path
 3. Create MD5 hash of full URL (first 8 chars)
-4. Get file extension (default to `.jpg`)
-5. Make filename safe (replace non-alphanumeric chars)
-6. Truncate to 50 chars max
-7. Combine: `{hash}_{safe_name}`
+4. Split the name into stem and extension (default extension `.jpg`)
+5. Make both parts safe (replace non-alphanumeric chars)
+6. Truncate the stem to 50 chars; the extension is never cut off
+7. Combine: `{hash}_{safe_stem}{ext}`
 
 **Example:**
 ```
@@ -220,34 +217,42 @@ Output: a1b2c3d4_story_art.webp
 
 ---
 
-### download_image(url: str, output_dir: str) -> str | None
+### download_image(url, output_dir, cancel=None) -> str | None
 
-**Purpose:** Download a single image.
+**Purpose:** Download a single image (used for the cover).
 
 **Features:**
 - Adds `Referer` header to avoid CDN blocking
-- 30 second timeout
+- `net.get()` with `IMAGE_RETRIES` (1) and `IMAGE_TIMEOUT` `(5, 20)`
 - Creates output directory if needed
 
-**Returns:** Local file path, or `None` if failed.
+**Returns:** Local file path, or `None` if failed. `net.Cancelled` propagates.
 
 ---
 
-### download_images(images: list[dict], output_dir: str) -> list[dict]
+### download_images(images, output_dir, cancel=None, progress=None) -> list[dict]
 
-**Purpose:** Download all images and update their `local_path` fields.
+**Purpose:** Download all images for one story and update their `local_path` and `error` fields.
 
 **Parameters:**
 - `images` - List of image dicts from `_extract_content()`
-- `output_dir` - Directory to save images
+- `output_dir` - Directory to save images (the run's working folder inside the output directory)
+- `cancel` - Optional event; `net.Cancelled` is raised promptly when set
+- `progress` - Optional `callback(done, total)` called before each download
 
-**Returns:** Updated list with `local_path` populated.
+**Behaviour:**
+- After `_HOST_FAILURE_LIMIT` (2) consecutive connection failures to one host, the remaining images on that host are skipped for this story. This keeps a dead image CDN from stalling every image in turn
+- `net.Offline` (no internet at all) is not swallowed; it propagates so the run aborts
+- Each image ends with `error` set to `None`, `"connection"` (host unreachable or skipped) or `"http"` (404, read timeout, disk error)
+
+**Returns:** Updated list. Images that failed keep `local_path = None`; the EPUB builder removes their `<img>` tags.
 
 ## Error Handling
 
 - **Missing elements:** Fallback values used, no exceptions
 - **JSON parsing:** Caught and ignored, moves to next method
-- **Image download failures:** Logged, returns `None`, doesn't crash
+- **Image download failures:** Logged, `local_path` stays `None`, doesn't crash
+- **Stop / no internet:** `net.Cancelled` and `net.Offline` propagate to the GUI
 
 ## Maintenance Notes
 
