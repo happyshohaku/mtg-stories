@@ -28,7 +28,7 @@ class Story:
 
 ## Functions
 
-### parse_story(html, url, fallback_author=None, fallback_date=None, fallback_title=None) -> Story
+### parse_story(html, url, fallback_author=None, fallback_date=None, fallback_title=None, card_lookup=None) -> Story
 
 **Purpose:** Main entry point - parse a story page and extract all content.
 
@@ -36,6 +36,7 @@ class Story:
 - `html` - HTML content of the story page
 - `url` - URL of the story (for resolving relative links)
 - `fallback_author`, `fallback_date`, `fallback_title` - used when the page yields "Unknown Author", no date, or "Untitled" (wiki rows and article metadata supply these)
+- `card_lookup` - function that resolves `<cig-card>` entry ids to card images; the GUI passes `scraper.fetch_card_images`. Without it, cards show as their name
 
 **archive.org pages:** the Wayback Machine toolbar and injected scripts are stripped first (`_strip_wayback_toolbar`), and relative links are resolved against the original URL rather than the archive URL (`_get_base_url_for_content`).
 
@@ -149,7 +150,7 @@ for script in soup.find_all("script", {"type": "application/ld+json"}):
 
 ---
 
-### _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict]]
+### _extract_content(soup: BeautifulSoup, base_url: str, card_lookup=None) -> tuple[str, list[dict]]
 
 **Purpose:** Extract the main story content, preserving HTML structure.
 
@@ -173,16 +174,21 @@ for script in soup.find_all("script", {"type": "application/ld+json"}):
    - `iframe` (not supported in EPUB)
    - `.social-share`, `.comments`, `.related-articles`, `.advertisement`
    - Wayback Machine elements (`#wm-ipp-base`, `[id^='wm-']`, ...) and old site chrome (`.breadcrumb`, `.site-footer`, ...)
-3. **Process images:**
+3. **Replace card placeholders** (`_replace_card_placeholders`):
+   - The site embeds cards as `<cig-card entry="ID">0001_MTGFRA_CommBord: Card Name</cig-card>` and fills in the picture with JavaScript
+   - Entry ids are resolved in one batch through `card_lookup`; each placeholder becomes an `<img>` (plus a second one for a back face)
+   - A card that cannot be resolved is reduced to its name, without the internal label prefix
+   - `<responsive-grid>` and `<grid-item>` wrappers are unwrapped
+4. **Process images:**
    - Get URL from `src` or `data-src`
    - Generate unique filename
    - Update `src` to local path (`images/filename`)
    - Remove `srcset`, `data-src`, `data-srcset`, `loading` attributes
-4. **Process links:**
+5. **Process links:**
    - Keep internal anchor links (`#section`)
    - Remove magic.wizards.com and web.archive.org links (keep text)
    - Keep other external links
-5. **Normalize whitespace**
+6. **Normalize whitespace**
 
 **Image Dict Structure:**
 ```python
@@ -268,3 +274,6 @@ Add new selector to the list in `_extract_title()`.
 1. Inspect page structure in browser DevTools
 2. Add new selector to `_extract_content()`
 3. Check if new unwanted elements need filtering
+
+### If an internal label shows where a card image should be:
+The page uses a placeholder tag filled in by JavaScript. Check the tag name and attribute in the raw HTML against `_replace_card_placeholders()`, and the `magicCard` fields (`face`, `back`) used by `scraper.fetch_card_images()`.

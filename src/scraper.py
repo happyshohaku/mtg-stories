@@ -9,6 +9,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+import requests
+
 from . import dedup
 from .dates import parse_date
 from . import net
@@ -176,6 +178,57 @@ def fetch_story_page(url: str, cancel: "threading.Event | None" = None) -> str:
     response = net.get(url, cancel=cancel)
     response.raise_for_status()
     return response.text
+
+
+CARD_LOOKUP_BATCH = 100  # Contentful's default page size; keeps the URL short too
+
+
+def fetch_card_images(entry_ids: list[str], cancel: "threading.Event | None" = None) -> dict[str, dict]:
+    """
+    Look up card entries referenced by <cig-card entry="..."> placeholders.
+
+    Story pages embed cards as placeholders that the site fills in with
+    JavaScript; the image URLs only exist in Contentful.
+
+    Returns:
+        {entry_id: {"name": ..., "face": url, "back": url or None}} for the
+        entries that were found and have a face image. A failed lookup is
+        logged and leaves its entries out; net.Offline and net.Cancelled
+        propagate.
+    """
+    cards: dict[str, dict] = {}
+    unique_ids = list(dict.fromkeys(entry_ids))
+    for start in range(0, len(unique_ids), CARD_LOOKUP_BATCH):
+        batch = unique_ids[start:start + CARD_LOOKUP_BATCH]
+        params = {
+            "access_token": CONTENTFUL_TOKEN,
+            "content_type": "magicCard",
+            "sys.id[in]": ",".join(batch),
+            "select": "sys.id,fields.name,fields.face,fields.back",
+            "locale": "en",
+            "limit": CARD_LOOKUP_BATCH,
+        }
+        try:
+            response = net.get(CONTENTFUL_API, params=params, headers=HEADERS,
+                               timeout=net.DEFAULT_TIMEOUT, cancel=cancel)
+            response.raise_for_status()
+            items = response.json().get("items", [])
+        except net.Offline:
+            raise
+        except (requests.RequestException, ValueError) as e:
+            log.warning("Card lookup failed for %d entries: %s", len(batch), e)
+            continue
+
+        for item in items:
+            fields = item.get("fields", {})
+            if fields.get("face"):
+                cards[item["sys"]["id"]] = {
+                    "name": fields.get("name", ""),
+                    "face": fields["face"],
+                    "back": fields.get("back") or None,
+                }
+
+    return cards
 
 
 def fetch_article_story_sets() -> dict[int, list[dict]]:

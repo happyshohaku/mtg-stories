@@ -38,6 +38,7 @@ def parse_story(
     fallback_author: str | None = None,
     fallback_date: datetime | None = None,
     fallback_title: str | None = None,
+    card_lookup: Callable[[list[str]], dict[str, dict]] | None = None,
 ) -> Story:
     """
     Parse a story page and extract all relevant content.
@@ -48,6 +49,8 @@ def parse_story(
         fallback_author: Author name to use if extraction fails (e.g., from wiki metadata).
         fallback_date: Publication date to use if extraction fails.
         fallback_title: Title to use if extraction fails.
+        card_lookup: Resolves <cig-card> entry ids to card images (see
+            scraper.fetch_card_images). Without it, cards show as their name.
 
     Returns:
         A Story object with all extracted data.
@@ -71,7 +74,7 @@ def parse_story(
 
     # Resolve base URL for archive.org pages (use original URL for relative links)
     base_url = _get_base_url_for_content(url)
-    content_html, images = _extract_content(soup, base_url)
+    content_html, images = _extract_content(soup, base_url, card_lookup)
 
     return Story(
         url=url,
@@ -267,7 +270,49 @@ def _extract_publication_date(soup: BeautifulSoup) -> datetime | None:
     return None
 
 
-def _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict]]:
+def _replace_card_placeholders(
+    content_elem: BeautifulSoup,
+    card_lookup: Callable[[list[str]], dict[str, dict]] | None,
+) -> None:
+    """
+    Turn <cig-card entry="..."> placeholders into card images.
+
+    The site fills these in with JavaScript; the raw page only holds an
+    internal label such as "0001_MTGFRA_CommBord: Jace, Multiverse Architect".
+    Cards that cannot be resolved are reduced to the card name.
+    """
+    placeholders = content_elem.find_all("cig-card")
+    if not placeholders:
+        return
+
+    entry_ids = [p["entry"] for p in placeholders if p.get("entry")]
+    cards = card_lookup(entry_ids) if card_lookup and entry_ids else {}
+
+    for placeholder in placeholders:
+        label = placeholder.get_text(strip=True)
+        # Drop the internal "0001_MTGFRA_CommBord: " prefix
+        name = label.split(": ", 1)[1] if ": " in label else label
+        card = cards.get(placeholder.get("entry"))
+        if not card:
+            placeholder.replace_with(name)
+            continue
+
+        name = card.get("name") or name
+        faces = [content_elem.new_tag("img", src=card["face"], alt=name)]
+        if card.get("back"):
+            faces.append(content_elem.new_tag("img", src=card["back"], alt=f"{name} (back)"))
+        placeholder.replace_with(*faces)
+
+    # Layout wrappers for the site's card carousel; unknown to e-readers
+    for wrapper in content_elem.find_all(["responsive-grid", "grid-item"]):
+        wrapper.unwrap()
+
+
+def _extract_content(
+    soup: BeautifulSoup,
+    base_url: str,
+    card_lookup: Callable[[list[str]], dict[str, dict]] | None = None,
+) -> tuple[str, list[dict]]:
     """
     Extract the main story content, preserving HTML structure.
 
@@ -320,6 +365,8 @@ def _extract_content(soup: BeautifulSoup, base_url: str) -> tuple[str, list[dict
     ]
     for unwanted in content_elem.select(", ".join(unwanted_selectors)):
         unwanted.decompose()
+
+    _replace_card_placeholders(content_elem, card_lookup)
 
     # Process images
     for img in content_elem.find_all("img"):

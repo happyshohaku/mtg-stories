@@ -208,6 +208,18 @@ Generic titles such as "Prologue", "Epilogue" or "Chapter 3" never produce a bar
 - Raises `net.Cancelled` when the cancel event is set and `net.Offline` when the internet is gone
 - Follows redirects
 
+---
+
+### fetch_card_images(entry_ids: list[str], cancel: threading.Event | None = None)
+
+**Purpose:** Resolve the cards a story page embeds as `<cig-card entry="ID">` placeholders. The page itself holds no image URL; the site fills it in with JavaScript.
+
+**Features:**
+- Queries `magicCard` entries with `sys.id[in]`, 100 ids per request
+- Returns `{entry_id: {"name", "face", "back"}}` for entries that have a face image (`back` is `None` for single-faced cards)
+- A failed batch is logged and left out, so those cards fall back to their name in the parser
+- `net.Cancelled` and `net.Offline` propagate
+
 ## Error Handling
 
 - **Year fetch failures:** Logged and skipped, other years continue

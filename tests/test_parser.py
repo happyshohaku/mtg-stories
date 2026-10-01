@@ -87,3 +87,50 @@ def test_url_to_filename_is_safe_and_unique_per_url():
     assert a != b and a.endswith("_pic.jpg")
     assert parser._url_to_filename("https://x/y/no-extension").endswith(".jpg")
     assert "/" not in parser._url_to_filename("https://x/we ird?name=1.png")
+
+
+CARDS_PAGE = """
+<html><body><article><div class="article-body">
+<p>Jace</p>
+<div style="text-align: center;">
+<responsive-grid slide-view-if="(min-width:10px)">
+  <grid-item><cig-card entry="AAA">0216_MTGFRA_MainPair: Jace, Reality Sculptor</cig-card></grid-item>
+  <grid-item><cig-card entry="BBB">0300_MTGFRA_BdlsDipt: Two-Faced Card</cig-card></grid-item>
+</responsive-grid>
+</div>
+<div><cig-card entry="GONE">0001_MTGFRA_CommBord: Jace, Multiverse Architect</cig-card></div>
+</div></article></body></html>
+"""
+
+
+def test_card_placeholders_become_images():
+    asked = []
+
+    def lookup(ids):
+        asked.extend(ids)
+        return {
+            "AAA": {"name": "Jace, Reality Sculptor", "face": "https://media.example.com/jace.webp", "back": None},
+            "BBB": {"name": "Two-Faced Card", "face": "https://media.example.com/front.webp",
+                    "back": "https://media.example.com/back.webp"},
+        }
+
+    story = parser.parse_story(CARDS_PAGE, "https://magic.wizards.com/en/news/magic-story/x", card_lookup=lookup)
+    assert asked == ["AAA", "BBB", "GONE"]
+    assert [i["url"] for i in story.images] == [
+        "https://media.example.com/jace.webp",
+        "https://media.example.com/front.webp",
+        "https://media.example.com/back.webp",
+    ]
+    assert 'alt="Jace, Reality Sculptor"' in story.content_html
+    # Internal labels and site-only tags never reach the book
+    assert "MTGFRA" not in story.content_html
+    assert "cig-card" not in story.content_html and "grid-item" not in story.content_html
+    # A card that cannot be resolved is reduced to its name
+    assert "Jace, Multiverse Architect" in story.content_html
+
+
+def test_card_placeholders_fall_back_to_names_without_lookup():
+    story = parser.parse_story(CARDS_PAGE, "https://magic.wizards.com/en/news/magic-story/x")
+    assert story.images == []
+    assert "Jace, Reality Sculptor" in story.content_html
+    assert "MTGFRA" not in story.content_html and "cig-card" not in story.content_html

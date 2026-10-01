@@ -998,6 +998,7 @@ class MTGStoriesApp:
                             fallback_author=info.get("author"),
                             fallback_date=info.get("published_date"),
                             fallback_title=info.get("title"),
+                            card_lookup=lambda ids: scraper.fetch_card_images(ids, cancel=cancel),
                         )
 
                         if info.get("published_date"):
